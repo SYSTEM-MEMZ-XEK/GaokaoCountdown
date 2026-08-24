@@ -14,6 +14,7 @@ public partial class ColorPickerDialog : Window
     public ColorPickerDialog(string initialHex)
     {
         InitializeComponent();
+        Helpers.WindowBackdropHelper.EnsureBackground(this);   // Win10 无 Mica → 降级不透明背景
         try { Picker.Color = Color.Parse(initialHex); } catch { }
     }
 

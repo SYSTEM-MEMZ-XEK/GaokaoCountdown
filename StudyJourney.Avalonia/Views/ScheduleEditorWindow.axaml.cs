@@ -21,6 +21,7 @@ public partial class ScheduleEditorWindow : Window
     public ScheduleEditorWindow()
     {
         InitializeComponent();
+        Helpers.WindowBackdropHelper.EnsureBackground(this);   // Win10 无 Mica → 降级不透明背景
         Icon = App.AppIcon;
         EntryGrid.ItemsSource = App.Schedule.Data.Entries;
         RefreshExamGrid();

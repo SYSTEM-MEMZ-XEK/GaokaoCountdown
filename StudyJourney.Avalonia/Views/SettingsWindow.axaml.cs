@@ -23,6 +23,7 @@ public partial class SettingsWindow : FluentAvalonia.UI.Windowing.FAAppWindow
     public SettingsWindow()
     {
         InitializeComponent();
+        Helpers.WindowBackdropHelper.EnsureBackground(this);   // Win10 无 Mica → 降级不透明背景
         Icon = LoadBitmapIcon();   // FAAppWindow.Icon 是 IImage，需用 PNG（Bitmap 不支持 ico）
         // 默认显示倒计时页（含数据加载）
         ShowPage(new CountdownPage());
