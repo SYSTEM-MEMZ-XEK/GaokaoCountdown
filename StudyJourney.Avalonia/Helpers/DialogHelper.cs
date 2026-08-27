@@ -37,6 +37,7 @@ public static class DialogHelper
 
         if (owner != null && owner.IsVisible)
         {
+            owner.Activate();              // 确保 owner 在前台，弹窗才不会被盖住
             await box.ShowDialog(owner);
             return result;
         }
@@ -58,7 +59,11 @@ public static class DialogHelper
         root.Children.Add(okBtn);
         okBtn.Click += (_, _) => box.Close();
 
-        if (owner != null && owner.IsVisible) await box.ShowDialog(owner);
+        if (owner != null && owner.IsVisible)
+        {
+            owner.Activate();              // 确保 owner 在前台，弹窗才不会被盖住
+            await box.ShowDialog(owner);
+        }
         else box.Show();
     }
 
@@ -74,6 +79,7 @@ public static class DialogHelper
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
             CanResize = false,
             WindowDecorations = WindowDecorations.Full,
+            Topmost = true,   // 防 Win10 多窗口层级问题：owner 非活动时弹窗被盖在窗口后面
             Content = panel
         };
         root = panel;

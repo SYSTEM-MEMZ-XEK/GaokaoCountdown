@@ -208,25 +208,15 @@ namespace StudyJourney.Avalonia.Models
             {
                 try
                 {
-                    // 迁移兼容：老版本课表在 exe 目录，新版统一到 Documents\StudyJourney\schedule.json
+                    // 课表数据统一在 Documents\StudyJourney\schedule.json（不随 exe 分发）。
+                    // 注意：不要再从 exe 目录复制旧 schedule.json——发布产物若携带该文件，
+                    // 复制软件到新电脑后会用 exe 里的旧课表覆盖用户数据（历史 bug，已移除）。
                     var dir = Path.GetDirectoryName(_schedulePath);
                     if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
-                    var legacy = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "schedule.json");
-                    if (!File.Exists(_schedulePath) && File.Exists(legacy))
-                    {
-                        try { File.Copy(legacy, _schedulePath); } catch { /* 复制失败则读旧路径 */ }
-                    }
 
                     if (File.Exists(_schedulePath))
                     {
                         var json = File.ReadAllText(_schedulePath);
-                        return JsonSerializer.Deserialize<ScheduleData>(json, _jsonOpts)
-                               ?? new ScheduleData();
-                    }
-                    // 新路径尚未迁移成功但旧路径存在时回退旧文件
-                    if (File.Exists(legacy))
-                    {
-                        var json = File.ReadAllText(legacy);
                         return JsonSerializer.Deserialize<ScheduleData>(json, _jsonOpts)
                                ?? new ScheduleData();
                     }

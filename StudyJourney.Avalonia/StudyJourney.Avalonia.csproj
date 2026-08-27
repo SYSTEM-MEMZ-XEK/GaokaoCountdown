@@ -28,10 +28,9 @@
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
 
-  <!-- 与 WPF 版共用 settings.json / schedule.json（迁移规划：数据文件共用） -->
+  <!-- 与 WPF 版共用 settings.json（数据文件：课表/上传等存 Documents\StudyJourney，不随 exe 分发） -->
   <ItemGroup>
     <None Include="..\settings.json" Link="settings.json" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="..\schedule_example.json" Link="schedule.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <!-- 应用资源（托盘图标等） -->
