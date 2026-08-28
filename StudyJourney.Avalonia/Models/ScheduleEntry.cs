@@ -182,7 +182,7 @@ namespace StudyJourney.Avalonia.Models
             /// <summary>时段模板（课程表网格的行定义），若为空则自动从 Entries 推算</summary>
             public List<TimeTemplate> TimeTemplates { get; set; } = new();
 
-            /// <summary>课表文件完整路径（统一到 Documents\StudyJourney\schedule.json，与 HTTP 远程管理共用）</summary>
+            /// <summary>课表文件完整路径（软件目录 schedule.json，随软件文件夹分发；HTTP 远程管理共用）</summary>
             public static string ScheduleFilePath => _schedulePath;
 
             /// <summary>按 星期→节次 排序（DataGrid 展示用）</summary>
@@ -195,8 +195,13 @@ namespace StudyJourney.Avalonia.Models
             }
 
             private static readonly string _schedulePath =
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                             "StudyJourney", "schedule.json");
+                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "schedule.json");
+
+            /// <summary>旧版数据位置：Documents\StudyJourney\schedule.json（v2.5.1 及以前）
+            /// 仅用于一次性迁移回软件目录，之后不再读写</summary>
+            private static readonly string _legacyDocsPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                "StudyJourney", "schedule.json");
 
             private static readonly JsonSerializerOptions _jsonOpts = new()
             {
@@ -208,11 +213,18 @@ namespace StudyJourney.Avalonia.Models
             {
                 try
                 {
-                    // 课表数据统一在 Documents\StudyJourney\schedule.json（不随 exe 分发）。
-                    // 注意：不要再从 exe 目录复制旧 schedule.json——发布产物若携带该文件，
-                    // 复制软件到新电脑后会用 exe 里的旧课表覆盖用户数据（历史 bug，已移除）。
+                    // 课表数据统一在软件目录 schedule.json（随软件文件夹一起分发/拷贝，
+                    // 本机改好 → 整个文件夹拷到班级电脑 → 课表直接跟着走）。
                     var dir = Path.GetDirectoryName(_schedulePath);
                     if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+
+                    // v2.5.2 一次性迁移：老版本课表在 Documents\StudyJourney\schedule.json，
+                    // 软件目录没有时把它复制过来（仅当软件目录缺失时执行一次，不会反复覆盖）。
+                    if (!File.Exists(_schedulePath) && File.Exists(_legacyDocsPath))
+                    {
+                        try { File.Copy(_legacyDocsPath, _schedulePath); }
+                        catch { /* 复制失败则走空课表 */ }
+                    }
 
                     if (File.Exists(_schedulePath))
                     {

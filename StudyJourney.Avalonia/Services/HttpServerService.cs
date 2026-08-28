@@ -384,7 +384,7 @@ public static class HttpServerService
                 try
                 {
                     schedule.SortEntries();
-                    schedule.Save();   // 写 Documents\StudyJourney\schedule.json（原子性由 JsonSerializer+WriteAllText 保证）
+                    schedule.Save();   // 写软件目录 schedule.json（原子性由 JsonSerializer+WriteAllText 保证）
                     Logger.Log($"[{GetCurrentDisplayName(request)}] 修改课表");
                     Helpers.AppLogger.Info("课表已通过远程接口更新");
                     return Results.Json(new { success = true, message = "课表更新成功" });
