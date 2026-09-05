@@ -1,9 +1,10 @@
 ﻿# 学程
 
-> 🎓 高考倒计时桌面伴侣 — 倒计时 · 课表 · 考试 · 天气 · 提醒 · 远程管理
-> 基于 Avalonia + FluentAvalonia 构建，WinUI 3 风格界面 ｜ 当前版本：**v2.5.0**
+> 🎓 高考倒计时桌面伴侣 — 倒计时 · 课表 · 考试 · 天气 · 提醒 · 远程管理 · 自动化任务
+> 基于 Avalonia + FluentAvalonia 构建，WinUI 3 风格界面 ｜ 当前版本：**v2.7.0**
 >
-> 📦 框架迁移已完成（WPF → Avalonia），旧 WPF 版本已废弃，源码归档于 `LegacyWPF/`（本地保留、不入库）
+> 📦 框架迁移已完成（WPF → Avalonia）；**旧 WPF 版已确认淘汰（2026-09-05），不再维护**，源码归档于 `LegacyWPF/`（本地保留、不入库）
+> 🔐 老师账号密码采用 **PBKDF2 哈希存储**（v2.7.0 起），settings.json 不再保存明文密码
 
 <p align="center">
   <img src="icon.ico" width="96" alt="图标"/>
@@ -51,7 +52,14 @@
 - 💬 **每日一言** — API 励志语录随机展示，可自定义 API 地址与字段
 - 📦 **系统托盘** — 任务栏托盘常驻，右键菜单快捷操作
 
-### 🌐 远程管理（v2.5.0 新增）
+### 🧩 自动化任务（v2.7.0 新增）
+- 🧩 **拼图式规则** — 像拼积木一样把「① 触发条件」与「② 要做的动作」两块拼起来，无需写配置
+- ⏰ **触发拼块** — 固定时间（每天/指定星期）· 上课前 N 分钟 · 下课时 · 放学时（当天末节下课）· 闲置 N 分钟 · 软件启动后
+- ⚙️ **动作拼块** — 打开文件 · 打开科目课件（自动取课件目录最新文件）· 播放音频 · 熄屏 · 关机/重启（倒计时可取消）· 弹出提醒
+- 🛡 **防误触** — 考试模式/上课时段不触发闲置熄屏；自习班会课前不自动开课件；每条规则独立启停 + 全局总开关
+- 💾 **独立配置** — 规则存 automations.json（随软件文件夹分发，「恢复默认设置」不会误删）
+
+### 🌐 远程管理（v2.5.0 起持续迭代）
 - 🖥 **局域网 HTTP 服务** — 启动软件自动开启（可关），老师浏览器访问 `http://本机IP:8080`
 - 👥 **多老师账号** — 语数英物化生 6 位老师 + 管理员，登录页下拉选账号
 - 📚 **课表远程管理** — 周课表可视化编辑（选科限定，模态框选课），双击改、一键保存
@@ -59,12 +67,12 @@
 - 📊 **班级状态** — IP / 磁盘剩余 / 最近上传 / 运行指示灯（15s 自动刷新）
 - 📋 **操作日志** — 登录/改课表/上传全记录（按老师显示名），管理员可查
 - 🏫 **班级信息** — 班级名 / 老师名网页端与设置页均可改
-- 🔐 **安全** — Token 持久化登录、IP 白名单可选开关
+- 🔐 **安全** — Token 持久化登录、**登录限速**（同 IP 错 5 次锁 2 分钟）、**PBKDF2 密码哈希**（v2.7.0，旧明文登录后自动迁移）、账号名不外泄、IP 白名单可选开关
 - ⌨️ **全局快捷键** — Ctrl+Shift+H 显隐主窗 / Ctrl+Shift+B 课表栏 / Ctrl+Shift+E 考试模式
 - 🎯 **始终置顶** — 可选始终置顶或正常窗口层级
 - 🚀 **自动更新** — GitHub Release 检查，自包含/框架依赖版自动匹配下载
-- 🔒 **单实例** — 重复启动时激活已有窗口
-- 💾 **配置持久化** — JSON 文件存储，重启不丢失；支持一键备份/恢复
+- 🔒 **单实例** — 重复启动时激活已有窗口（按进程名校验，不误激活同名窗口）
+- 💾 **配置持久化** — JSON 文件存储（settings.json / schedule.json / automations.json），重启不丢失；支持一键备份/恢复
 
 ---
 
@@ -129,17 +137,22 @@ StudyJourney.Avalonia/
 ├── Assets/                         # 图标（icon.ico / icon.png）
 │
 ├── Models/                         # 数据模型（纯数据，无 UI 依赖）
-│   ├── AppSettings.cs              # 应用设置（JSON 持久化）
+│   ├── AppSettings.cs              # 应用设置（JSON 持久化；含 TeacherAccount 与选科）
 │   ├── ScheduleEntry.cs            # 课表/考试条目/时段模板/课程表网格行
-│   └── ScheduleManager.cs          # 课表与考试数据管理（加载/保存/查询/导入）
+│   ├── ScheduleManager.cs          # 课表与考试数据管理（加载/保存/查询/导入）
+│   └── AutomationRule.cs           # 自动化规则（触发/动作拼块枚举 + automations.json 存储）
 │
 ├── Services/                       # 服务层（业务逻辑）
 │   ├── ReminderService.cs          # 提醒调度服务（上课/下课/考试/60 秒倒计时）
+│   ├── AutomationService.cs        # 自动化任务调度（触发判定/动作执行/闲置与熄屏 P/Invoke）
+│   ├── HttpServerService.cs        # 远程管理 Minimal API（内嵌教师端 Web 控制台）
 │   ├── WeatherService.cs           # 天气服务（HTTP + JSON 解析）
 │   └── UpdateService.cs            # GitHub Release 更新检查/下载
 │
 ├── Helpers/                        # 公共工具
-│   ├── AppLogger.cs                # 轻量日志（Debug + 文件）
+│   ├── AppLogger.cs                # 轻量日志（Debug + 文件，超限轮转）
+│   ├── FileAtomic.cs               # 原子写文件（settings/schedule/tokens/automations）
+│   ├── PasswordHasher.cs           # 密码哈希（PBKDF2-SHA256，登录凭据存储）
 │   ├── ColorUtils.cs               # 颜色解析/天气表情符号
 │   ├── GlobalHotKeyManager.cs      # 全局快捷键（Win32 RegisterHotKey）
 │   └── TimeSimulator.cs            # 时间模拟（调试用）
@@ -148,18 +161,20 @@ StudyJourney.Avalonia/
 │   ├── MainWindow.axaml(.cs)       # 主窗口倒计时（动画/穿透/隐藏逻辑）
 │   ├── ScheduleBarWindow.axaml(.cs)# 课表悬浮栏（紧凑/展开/多显示器/天气）
 │   ├── ExamModeWindow.axaml(.cs)   # 考试全屏倒计时
-│   ├── SettingsWindow.axaml(.cs)   # 设置窗口（FAAppWindow + NavigationView 6 页）
+│   ├── SettingsWindow.axaml(.cs)   # 设置窗口（FAAppWindow + NavigationView 8 页）
 │   ├── ScheduleEditorWindow.axaml(.cs) # 课表/考试编辑（DataGrid + 周视图调课）
 │   ├── ColorPickerDialog.axaml(.cs)# 颜色选择对话框
 │   ├── DebugTimeWindow.axaml(.cs)  # 时间模拟调试窗口
-│   └── Settings/                   # 6 个设置页
+│   └── Settings/                   # 8 个设置页
 │       ├── CountdownPage.axaml(.cs)  # 倒计时
 │       ├── PositionPage.axaml(.cs)   # 位置
 │       ├── ApiPage.axaml(.cs)        # API（一言/天气）
 │       ├── SchedulePage.axaml(.cs)   # 课表/提醒
 │       ├── ExamPage.axaml(.cs)       # 考试
+│       ├── ServerPage.axaml(.cs)     # 服务器（远程管理/账号/科目/日志）
+│       ├── AutomationPage.axaml(.cs) # 自动化（拼图式规则）
 │       ├── AboutPage.axaml(.cs)      # 关于（版本/更新）
-│       └── ISettingsPage.cs          # 设置页接口（Load/Apply）
+│       └── ISettingsPage.cs          # 设置页接口（Load/Apply/IsDirty）
 │
 └── Updater/                        # 独立更新程序（StudyJourney.Updater）
 ```
@@ -175,7 +190,8 @@ StudyJourney.Avalonia/
 | 🔌 API | 每日一言 API + 实时天气（城市/颜色/刷新间隔） |
 | 📋 课表 | 课表栏开关、提醒开关、提示音、自动收缩 |
 | 📝 考试 | 考试模式开关、自动进入、字号、颜色、字体 |
-| 🌐 服务器 | 远程服务开关/自启、课件存放位置（预设+自定义）、班级信息、老师账号、可选科目、操作日志 |
+| 🌐 服务器 | 远程服务开关/自启、课件存放位置（预设+自定义）、班级信息、老师账号（密码加密存储）、可选科目、操作日志 |
+| 🧩 自动化 | 总开关、规则列表（增删/启停）、拼图式编辑器（触发块 + 动作块 + 实时预览） |
 | ℹ 关于 | 版本信息、检查更新、GitHub 仓库 |
 
 ---
