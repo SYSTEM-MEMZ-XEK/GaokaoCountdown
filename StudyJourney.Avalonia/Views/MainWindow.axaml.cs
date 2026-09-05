@@ -159,7 +159,22 @@ public partial class MainWindow : Window
         }
 
         _examModeWindow = new ExamModeWindow();
-        _examModeWindow.Closed += (_, _) => _examModeWindow = null;
+        _examModeWindow.Closed += (_, _) =>
+        {
+            // #23 修复：区分退出来源——手动退出（ESC 双击/按钮）立即恢复主窗口；
+            // 考试结束自动退出保留 2 分钟延迟（老师可能继续用大屏，Tick 里的恢复逻辑不变）
+            bool byUser = _examModeWindow.ClosedByUser;
+            _examModeWindow = null;
+            if (byUser)
+            {
+                _hiddenByScheduleOrExam = false;
+                _classEndRestoreTimer?.Stop();
+                _classEndRestoreTimer = null;
+                Show();
+                ApplyWindowLayer();
+                Tick();
+            }
+        };
         _examModeWindow.Show();
     }
 
@@ -448,8 +463,8 @@ public partial class MainWindow : Window
             SetCapsule(GaokaoCapsule, cr, false);
         }
 
-        // 自定义倒计时跟随分离模式重建
-        RebuildCustomRings(DateTime.Now);
+        // 自定义倒计时跟随分离模式重建（#20：样式变化 → 强制重建；Tick 路径走增量刷新）
+        RebuildCustomRings(DateTime.Now, force: true);
     }
 
     private static void SetCapsule(Border b, CornerRadius cr, bool separated)
@@ -678,16 +693,21 @@ public partial class MainWindow : Window
         });
     }
 
-    /// <summary>弹出胶囊提醒（与顶栏同款样式），3 秒后淡出关闭</summary>
+    // #12：活跃提醒胶囊计数（右上角堆叠定位用；UI 线程访问，无需 Interlocked）
+    private static int _activeToasts;
+    private const double ToastWidth = 380, ToastHeight = 170;
+
+    /// <summary>弹出胶囊提醒（与顶栏同款样式），3 秒后淡出关闭。
+    /// #12 修复：定位改为屏幕右上角（原 CenterScreen 挡投影中央），多条提醒向下堆叠互不重叠。</summary>
     private void ShowCapsule(string title, string message)
     {
         try
         {
             var box = new Window
             {
-                Width = 380,
-                Height = 170,
-                WindowStartupLocation = WindowStartupLocation.CenterScreen,
+                Width = ToastWidth,
+                Height = ToastHeight,
+                WindowStartupLocation = WindowStartupLocation.Manual,   // #12：手动定位右上角
                 CanResize = false,
                 ShowInTaskbar = false,
                 Topmost = true,
@@ -724,6 +744,9 @@ public partial class MainWindow : Window
                     }
                 }
             };
+            int slot = ++_activeToasts;
+            box.Closed += (_, _) => _activeToasts = Math.Max(0, _activeToasts - 1);
+            box.Position = ComputeToastPosition(slot);
             box.Show();
 
             // 3 秒后淡出关闭
@@ -744,6 +767,17 @@ public partial class MainWindow : Window
             t.Start();
         }
         catch (Exception ex) { Helpers.AppLogger.Warn($"提醒弹窗失败: {ex.Message}"); }
+    }
+
+    /// <summary>#12：胶囊位置 = 主屏工作区右上角（避开任务栏），第 slot 条向下堆叠</summary>
+    private PixelPoint ComputeToastPosition(int slot)
+    {
+        var area = Screens.Primary?.WorkingArea
+                   ?? new PixelRect(new PixelPoint(0, 0), new PixelSize(1920, 1080));
+        const int margin = 16;
+        int x = area.Right - (int)ToastWidth - margin;
+        int y = area.Y + margin + (slot - 1) * ((int)ToastHeight + 8);   // PixelRect 顶边是 Y
+        return new PixelPoint(x, y);
     }
 
     /// <summary>模块三：高考（固定）+ 自定义倒计时（动态）；环形=文字左/环最右，条形=文字上/进度条下</summary>
@@ -830,18 +864,66 @@ public partial class MainWindow : Window
         return total > 0 ? Math.Clamp(passed / total, 0, 1) : 0;
     }
 
-    /// <summary>重建自定义倒计时胶囊（来自设置页「自定义倒计时」）</summary>
-    private void RebuildCustomRings(DateTime now)
+    // ── #20：自定义倒计时增量更新（避免每秒 Clear+重建整棵 UI 树的 GC 压力/闪烁）──
+    /// <summary>单个自定义倒计时的控件引用（增量刷新文本/进度时用）</summary>
+    private sealed class CustomRingView
     {
-        RingHost.Children.Clear();
-        var list = App.Settings.CustomCountdowns;
-        if (list == null || list.Count == 0) return;
+        public required Control Root { get; init; }
+        public required TextBlock TextTb { get; init; }
+        public Arc? ProgArc { get; init; }        // 环形进度弧
+        public ProgressBar? Bar { get; init; }    // 条形进度条
+        public TextBlock? PctTb { get; init; }    // 百分比文本
+        public required DateTime Target { get; init; }
+        public required string Name { get; init; }
+    }
 
-        foreach (var cc in list)
+    private readonly List<CustomRingView> _customRings = new();
+    private string? _customRingSig;   // 数据+样式签名：不变则走增量刷新
+
+    /// <summary>重建/刷新自定义倒计时胶囊（来自设置页「自定义倒计时」）。
+    /// #20 修复：签名（数据+样式）不变时仅更新文本与进度值；force=true 强制重建（样式变化/设置刷新时）。</summary>
+    private void RebuildCustomRings(DateTime now, bool force = false)
+    {
+        var list = App.Settings.CustomCountdowns;
+        var valid = (list ?? new List<CustomCountdown>())
+            .Where(cc => DateTime.TryParse(cc.DateStr, out var t) && t > now)
+            .ToList();
+
+        var s = App.Settings;
+        string sig = string.Join("|", valid.Select(cc => $"{cc.Name}@{cc.DateStr}"))
+            + "#" + (s.CountdownProgressBarStyle ? 1 : 0)
+            + (s.ShowProgressBar ? 1 : 0) + (s.ShowProgressText ? 1 : 0)
+            + (s.IslandSeparated ? 1 : 0)
+            + s.MainWindowCornerRadius + s.FontSize + s.FontFamily
+            + s.TextColor + s.AccentColor + s.ShowDays + s.ShowHours + s.ShowMinutes + s.ShowSeconds;
+
+        if (!force && sig == _customRingSig && _customRings.Count == valid.Count)
         {
-            if (!DateTime.TryParse(cc.DateStr, out var target) || target <= now) continue;
-            RingHost.Children.Add(BuildCustomRing(cc.Name, target, now));
+            // 增量路径（每秒 Tick 主路径）：只改文本/进度，不动控件树
+            for (int i = 0; i < _customRings.Count; i++)
+                UpdateCustomRing(_customRings[i], now);
+            return;
         }
+
+        RingHost.Children.Clear();
+        _customRings.Clear();
+        foreach (var cc in valid)
+        {
+            var view = BuildCustomRing(cc.Name, DateTime.Parse(cc.DateStr), now);
+            _customRings.Add(view);
+            RingHost.Children.Add(view.Root);
+        }
+        _customRingSig = sig;
+    }
+
+    /// <summary>增量刷新单个倒计时：文本、进度弧/条、百分比</summary>
+    private static void UpdateCustomRing(CustomRingView v, DateTime now)
+    {
+        v.TextTb.Text = FormatCountdownText(v.Name, v.Target, now);
+        double progress = ComputeProgress(v.Target, null, now);
+        if (v.ProgArc != null) v.ProgArc.SweepAngle = progress * 360;
+        if (v.Bar != null) v.Bar.Value = progress * 100;
+        if (v.PctTb != null) v.PctTb.Text = $"{progress * 100:F1}%";
     }
 
     /// <summary>检测自定义倒计时到期，触发一次性提醒（按 name|date 去重）</summary>
@@ -864,8 +946,9 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>构建单个自定义倒计时：环形=文字左/环最右，条形=文字上/进度条下（颜色统一用进度条设置）</summary>
-    private static Control BuildCustomRing(string name, DateTime target, DateTime now)
+    /// <summary>构建单个自定义倒计时：环形=文字左/环最右，条形=文字上/进度条下（颜色统一用进度条设置）。
+    /// #20：返回控件引用（CustomRingView）供增量刷新文本/进度。</summary>
+    private static CustomRingView BuildCustomRing(string name, DateTime target, DateTime now)
     {
         var progressBrush = new SolidColorBrush(App.Settings.AccentColor);
         double progress = ComputeProgress(target, null, now);
@@ -892,26 +975,32 @@ public partial class MainWindow : Window
             textTb.FontFamily = new FontFamily(App.Settings.FontFamily);
         panel.Children.Add(textTb);
 
+        Arc? progArc = null;
+        ProgressBar? barCtrl = null;
+        TextBlock? pctTb = null;
+
         if (bar)
         {
             // 条形：文字上、百分比中、进度条下
             if (App.Settings.ShowProgressText)
             {
-                panel.Children.Add(new TextBlock
+                pctTb = new TextBlock
                 {
                     Text = $"{progress * 100:F1}%", FontSize = 9,
                     Foreground = new SolidColorBrush(Color.FromArgb(0xAA, 0xFF, 0xFF, 0xFF)),
                     HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center
-                });
+                };
+                panel.Children.Add(pctTb);
             }
             if (App.Settings.ShowProgressBar)
             {
-                panel.Children.Add(new ProgressBar
+                barCtrl = new ProgressBar
                 {
                     Width = 70, Height = 3, Minimum = 0, Maximum = 100, Value = progress * 100,
                     Foreground = progressBrush,
                     Background = new SolidColorBrush(Color.FromArgb(0x22, 0xFF, 0xFF, 0xFF))
-                });
+                };
+                panel.Children.Add(barCtrl);
             }
         }
         else
@@ -924,7 +1013,7 @@ public partial class MainWindow : Window
                     StartAngle = 0, SweepAngle = 360,
                     Stroke = new SolidColorBrush(Color.FromArgb(0x24, 0xFF, 0xFF, 0xFF)), StrokeThickness = 3
                 };
-                var progArc = new Arc
+                progArc = new Arc
                 {
                     StartAngle = -90, SweepAngle = progress * 360,
                     Stroke = progressBrush, StrokeThickness = 3, StrokeLineCap = PenLineCap.Round
@@ -934,32 +1023,35 @@ public partial class MainWindow : Window
                 ring.Children.Add(progArc);
                 if (App.Settings.ShowProgressText)
                 {
-                    ring.Children.Add(new TextBlock
+                    pctTb = new TextBlock
                     {
                         Text = $"{progress * 100:F1}%", FontSize = 8,
                         Foreground = new SolidColorBrush(Color.FromArgb(0xAA, 0xFF, 0xFF, 0xFF)),
                         HorizontalAlignment = global::Avalonia.Layout.HorizontalAlignment.Center,
                         VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Center
-                    });
+                    };
+                    ring.Children.Add(pctTb);
                 }
                 panel.Children.Add(ring);
             }
             else if (App.Settings.ShowProgressText)
             {
                 // 无环时百分比独立显示在文字旁
-                panel.Children.Add(new TextBlock
+                pctTb = new TextBlock
                 {
                     Text = $"{progress * 100:F1}%", FontSize = 9,
                     Foreground = new SolidColorBrush(Color.FromArgb(0xAA, 0xFF, 0xFF, 0xFF)),
                     VerticalAlignment = global::Avalonia.Layout.VerticalAlignment.Center
-                });
+                };
+                panel.Children.Add(pctTb);
             }
         }
 
+        Control root;
         if (App.Settings.IslandSeparated)
         {
             // 分离模式：独立胶囊岛
-            return new Border
+            root = new Border
             {
                 CornerRadius = new CornerRadius(App.Settings.MainWindowCornerRadius),
                 Background = CapsuleBg,
@@ -970,9 +1062,17 @@ public partial class MainWindow : Window
                 Child = panel
             };
         }
+        else
+        {
+            // 合并模式：无背景，直接排列
+            root = panel;
+        }
 
-        // 合并模式：无背景，直接排列
-        return panel;
+        return new CustomRingView
+        {
+            Root = root, TextTb = textTb, ProgArc = progArc, Bar = barCtrl, PctTb = pctTb,
+            Target = target, Name = name,
+        };
     }
 
     private static string FormatDuration(TimeSpan ts)

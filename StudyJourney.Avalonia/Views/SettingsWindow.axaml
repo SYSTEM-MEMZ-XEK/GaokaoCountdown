@@ -58,6 +58,11 @@
                         <ui:FASymbolIconSource Symbol="Globe"/>
                     </ui:FANavigationViewItem.IconSource>
                 </ui:FANavigationViewItem>
+                <ui:FANavigationViewItem Content="自动化" Tag="automation">
+                    <ui:FANavigationViewItem.IconSource>
+                        <ui:FASymbolIconSource Symbol="Play"/>
+                    </ui:FANavigationViewItem.IconSource>
+                </ui:FANavigationViewItem>
                 <ui:FANavigationViewItem Content="关于" Tag="about">
                     <ui:FANavigationViewItem.IconSource>
                         <ui:FASymbolIconSource Symbol="Help"/>

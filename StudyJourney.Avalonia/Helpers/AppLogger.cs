@@ -12,6 +12,10 @@ namespace StudyJourney.Avalonia.Helpers
         private static readonly object _lock = new();
         private static string? _logPath;
         private const long MaxLogBytes = 1 * 1024 * 1024;   // 超过 1MB 轮转，避免无限增长
+        private const long RotateCheckEveryBytes = 64 * 1024;   // #14：写入期每累计 ~64KB 检查一次轮转
+
+        // #14 修复：原轮转只在启动时检查一次，写满 1MB 后直到重启都不再轮转（日志无限增长）
+        private static long _bytesSinceCheck;
 
         /// <summary>启用文件日志（写日志到 exe 目录 logs/app.log）</summary>
         public static void EnableFileLogging()
@@ -61,6 +65,13 @@ namespace StudyJourney.Avalonia.Helpers
                 lock (_lock)
                 {
                     File.AppendAllText(_logPath, line + Environment.NewLine);
+                    // #14：写入期轮转检查（字符数近似字节数，作为阈值判断足够）
+                    _bytesSinceCheck += line.Length + 2;
+                    if (_bytesSinceCheck >= RotateCheckEveryBytes)
+                    {
+                        _bytesSinceCheck = 0;
+                        RotateIfNeeded();
+                    }
                 }
             }
             catch { /* 日志写入失败不影响主流程 */ }

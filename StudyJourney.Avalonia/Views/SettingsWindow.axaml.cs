@@ -69,6 +69,7 @@ public partial class SettingsWindow : FluentAvalonia.UI.Windowing.FAAppWindow
             "schedule" => new SchedulePage(),
             "exam"     => new ExamPage(),
             "server"   => new ServerPage(),
+            "automation" => new AutomationPage(),
             "about"    => new AboutPage(),
             _          => new CountdownPage()
         });

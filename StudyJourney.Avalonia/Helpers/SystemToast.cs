@@ -26,6 +26,7 @@ public static class SystemToast
     private static IntPtr _hwnd;
     private static IntPtr _icon;
     private static bool _added;
+    private static int _generation;   // #17：通知代际计数（防旧延迟删除任务误删新气泡）
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct NOTIFYICONDATAW
@@ -103,10 +104,14 @@ public static class SystemToast
             }
             Shell_NotifyIconW(NIM_MODIFY, ref data);
 
+            // #17 修复：代际计数 —— 原实现两条提醒间隔 <6 秒时，第一条的延迟删除任务
+            // 会把第二条气泡的托盘条目一并删掉。现仅当代际仍是最新时才执行删除，
+            // 旧任务的删除责任移交给最新一条。
+            int gen = ++_generation;
             // 气泡显示约 6 秒后移除独立条目，托盘恢复原状（不影响应用自带 TrayIcon）
             _ = Task.Delay(TimeSpan.FromSeconds(6)).ContinueWith(_ =>
             {
-                if (!_added) return;
+                if (!_added || gen != _generation) return;   // 已有更新的通知，由它负责生命周期
                 _added = false;
                 var del = new NOTIFYICONDATAW
                 {

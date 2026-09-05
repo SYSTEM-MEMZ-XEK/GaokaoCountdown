@@ -25,6 +25,9 @@ public partial class App : Application
     /// <summary>全局提醒服务（上课/下课/60 秒倒计时）</summary>
     public static ReminderService? Reminders { get; private set; }
 
+    /// <summary>全局自动化任务服务（拼图式规则：触发 + 动作，automations.json）</summary>
+    public static AutomationService? Automation { get; private set; }
+
     /// <summary>设置被保存后触发（主窗口/悬浮栏等订阅并刷新）</summary>
     public static event Action? SettingsChanged;
 
@@ -116,6 +119,11 @@ public partial class App : Application
             // #3 修复后不再注入 Settings 实例：ReminderService 内部动态读 App.Settings
             Reminders = new ReminderService(Schedule);
             Reminders.Start();
+
+            // 自动化任务服务：拼图式规则（触发拼块 + 动作拼块）。总开关默认关，设置页开启才生效。
+            // 注意：automations.json 独立于 settings.json（恢复默认设置不误删规则）
+            Automation = new AutomationService(Schedule);
+            Automation.Start();
 
             SetupTrayIcon();
             SetupGlobalHotKeys();
@@ -299,6 +307,8 @@ public partial class App : Application
         GlobalHotKeyManager.UnregisterAll();
         Reminders?.Dispose();
         Reminders = null;
+        Automation?.Dispose();
+        Automation = null;
         _trayIcon?.Dispose();
         _trayIcon = null;
     }

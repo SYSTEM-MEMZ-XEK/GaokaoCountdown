@@ -29,6 +29,20 @@ public partial class ExamModeWindow : Window
     private bool _warnShown;
     private bool _autoExited;
 
+    /// <summary>
+    /// 考试模式激活中（运行时状态，A1 修复）：随窗口开关维护，
+    /// AutomationService 据此屏蔽课表/闲置类自动化规则（覆盖全部关闭路径：ESC 双击/按钮/自动退出）。
+    /// 注意与 App.Settings.EnableExamMode（持久化功能开关）区分——后者开启不代表正在考试。
+    /// （不叫 IsActive：避免与 Avalonia WindowBase.IsActive「窗口是否获得焦点」混淆）
+    /// </summary>
+    public static bool IsExamModeActive { get; private set; }
+
+    /// <summary>
+    /// 本次关闭是否由用户主动发起（ESC 双击 / 退出按钮 / 设置页退出）。
+    /// #23 修复：主窗口据此区分「手动退出 → 立即恢复显示」与「考试结束自动退出 → 延迟 2 分钟」。
+    /// </summary>
+    public bool ClosedByUser { get; private set; }
+
     public ExamModeWindow()
     {
         InitializeComponent();
@@ -40,7 +54,14 @@ public partial class ExamModeWindow : Window
             _weatherTimer?.Stop();
             _escResetTimer?.Stop();
             _warnHideTimer?.Stop();
+            IsExamModeActive = false;
         };
+    }
+
+    protected override void OnOpened(EventArgs e)
+    {
+        IsExamModeActive = true;
+        base.OnOpened(e);
     }
 
     private void Window_Opened(object? sender, EventArgs e)
@@ -258,7 +279,7 @@ public partial class ExamModeWindow : Window
                 {
                     _autoExited = true;
                     var autoClose = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
-                    autoClose.Tick += (_, _) => { autoClose.Stop(); if (IsLoaded) Close(); };
+                    autoClose.Tick += (_, _) => { autoClose.Stop(); if (IsLoaded) Close(); };   // 自动退出：ClosedByUser 保持 false
                     autoClose.Start();
                 }
             }
@@ -288,6 +309,7 @@ public partial class ExamModeWindow : Window
                     return;
                 }
             }
+            ClosedByUser = true;   // #23：ESC 双击退出 = 用户主动
             Close();
         }
         else if (e.Key == Key.F11)
@@ -309,6 +331,7 @@ public partial class ExamModeWindow : Window
 
     private void ExitBtn_Click(object? sender, RoutedEventArgs e)
     {
+        ClosedByUser = true;   // #23：按钮退出 = 用户主动
         Close();
     }
 }

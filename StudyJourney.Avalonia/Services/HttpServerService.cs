@@ -99,9 +99,15 @@ public static class HttpServerService
         "StudyJourney", "Uploads");
 
     /// <summary>
-    /// 课件上传保存目录（可自定义：settings.json 的 CustomUploadDirectory、网页端 /api/upload-dir 或代码赋值）
+    /// 课件上传保存目录（可自定义：settings.json 的 CustomUploadDirectory）。
+    /// A2 修复（自动化复核）：改为计算属性，settings 为唯一真源——
+    /// 原可写静态属性仅在服务器启动/远程 PUT 时同步，设置页改目录但服务未启动时
+    /// 自动化「打开科目课件」会去默认 Documents 目录找（静默找错目录）。
     /// </summary>
-    public static string UploadRootPath { get; set; } = DefaultUploadRootPath;
+    public static string UploadRootPath =>
+        string.IsNullOrWhiteSpace(App.Settings.CustomUploadDirectory)
+            ? DefaultUploadRootPath
+            : App.Settings.CustomUploadDirectory;
 
     /// <summary>
     /// 预设上传目录（Label, Path；Path 空 = 默认位置）。教师端网页与设置页共用，
@@ -273,9 +279,7 @@ public static class HttpServerService
         {
             Port = ParsePort(url);
 
-            // 自定义上传目录：settings.json 的 CustomUploadDirectory 非空则覆盖默认路径
-            if (!string.IsNullOrWhiteSpace(App.Settings.CustomUploadDirectory))
-                UploadRootPath = App.Settings.CustomUploadDirectory;
+            // 上传目录：UploadRootPath 已是计算属性（A2），随 settings 实时取值，无需启动时同步
 
             // 确保静态文件根目录存在（首启自动创建 + 写入示例首页，不覆盖已有文件）
             EnsureWebRoot();
@@ -549,9 +553,9 @@ public static class HttpServerService
                 try
                 {
                     // 持久化到设置（主程序设置页也能看到）+ 立即生效
+                    // （A2：UploadRootPath 是计算属性，写 settings 即全端生效，无需再同步静态字段）
                     App.Settings.CustomUploadDirectory = path;
                     App.SaveSettings();
-                    UploadRootPath = string.IsNullOrEmpty(path) ? DefaultUploadRootPath : path;
                     EnsureUploads();   // 创建目录 + .placeholder
 
                     Logger.Log($"[{GetCurrentDisplayName(request)}] 修改课件保存位置为 {UploadRootPath}");
@@ -1528,7 +1532,7 @@ public static class HttpServerService
 
                       <div class="card" id="loginCard">
                         <label>老师账号</label><select id="username" style="width:100%;padding:9px;background:#1a1a1a;color:var(--text);border:1px solid #444;font-size:14px"></select>
-                        <label>密码</label><input type="password" id="password" value="123456">
+                        <label>密码</label><input type="password" id="password" placeholder="输入密码">
                         <div class="row">
                           <label style="margin:0;display:flex;align-items:center;gap:6px;"><input type="checkbox" id="remember" checked> 记住我</label>
                           <button id="loginBtn">登录</button>

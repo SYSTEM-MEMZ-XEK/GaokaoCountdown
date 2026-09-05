@@ -1,0 +1,258 @@
+<UserControl x:Class="StudyJourney.Avalonia.Views.Settings.AutomationPage"
+             xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:models="using:StudyJourney.Avalonia.Models">
+    <ScrollViewer>
+        <StackPanel Spacing="14" Margin="0,8,20,20">
+
+            <!-- 总开关 -->
+            <Border CornerRadius="8" Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1" Padding="20,16">
+                <StackPanel Spacing="4">
+                    <TextBlock Text="🧩 自动化任务" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <ToggleSwitch x:Name="AutomationMasterToggle"
+                                  OnContent="已开启（规则到点自动执行）" OffContent="已关闭（所有规则暂停）"
+                                  IsCheckedChanged="MasterToggle_Toggled"/>
+                    <TextBlock Text="像拼积木一样把「① 当……（触发条件）」和「② 执行……（要做的动作）」两块拼在一起。"
+                               FontSize="11" Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               Margin="0,8,0,0" TextWrapping="Wrap"/>
+                    <TextBlock Text="例如：每天 18:00 → 关机；放学时 → 打开课件目录最新文件；闲置 10 分钟 → 关闭屏幕。"
+                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               TextWrapping="Wrap"/>
+                    <TextBlock Text="规则保存在 automations.json（随软件文件夹分发；「恢复默认设置」不会动它）。"
+                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 规则列表 -->
+            <Border CornerRadius="8" Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1" Padding="20,16">
+                <StackPanel Spacing="8">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Text="📋 我的规则" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        <Button Grid.Column="1" x:Name="NewRuleBtn" Content="＋ 新建规则" Classes="accent"
+                                Padding="14,6" Click="NewRuleBtn_Click"/>
+                    </Grid>
+                    <ListBox x:Name="RulesList" MinHeight="140" MaxHeight="200"
+                             SelectionChanged="RulesList_SelectionChanged">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate x:DataType="models:AutomationRule">
+                                <Border CornerRadius="6" Background="#0DFFFFFF" BorderBrush="#12FFFFFF"
+                                        BorderThickness="1" Padding="10,6" Margin="0,2">
+                                    <Grid ColumnDefinitions="Auto,*,Auto">
+                                        <CheckBox IsChecked="{Binding Enabled}" ToolTip.Tip="启用 / 暂停此规则"
+                                                  IsCheckedChanged="RuleEnabled_Toggled" VerticalAlignment="Center"/>
+                                        <StackPanel Grid.Column="1" Margin="10,0,6,0">
+                                            <TextBlock Text="{Binding Name}" FontSize="13" FontWeight="SemiBold"/>
+                                            <TextBlock Text="{Binding Summary}" FontSize="11"
+                                                       Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                                       TextTrimming="CharacterEllipsis" TextWrapping="NoWrap"/>
+                                        </StackPanel>
+                                        <Button Grid.Column="2" Content="删除" FontSize="11" Padding="10,3"
+                                                Click="DeleteRuleBtn_Click" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    <TextBlock x:Name="EmptyHintTb" Text="还没有规则。点「新建规则」开始拼第一块～"
+                               FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                               IsVisible="False"/>
+                    <TextBlock Text="点列表里的规则即可编辑；勾选框 = 该条规则单独启用/暂停。改完点窗口下方「保存设置」生效。"
+                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
+
+            <!-- 拼图编辑器 -->
+            <Border x:Name="EditorCard" CornerRadius="8" Background="#14FFFFFF" BorderBrush="#1FFFFFFF"
+                    BorderThickness="1" Padding="20,16" IsVisible="False">
+                <StackPanel Spacing="10">
+                    <TextBlock Text="🧩 拼图编辑器" FontSize="16" FontWeight="SemiBold"/>
+                    <TextBox x:Name="NameBox" PlaceholderText="规则名称（如：放学自动关机）" FontSize="13"
+                             TextChanged="NameBox_TextChanged"/>
+
+                    <Grid ColumnDefinitions="*,44,*">
+                        <!-- ── 触发拼块 ── -->
+                        <Border Background="#1A2B6CB0" BorderBrush="#402B6CB0" BorderThickness="1"
+                                CornerRadius="8" Padding="14,12">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="① 当……" FontSize="13" FontWeight="SemiBold" Foreground="#8FC1E8"/>
+                                <ComboBox x:Name="TriggerTypeCombo" FontSize="13"
+                                          SelectionChanged="TriggerTypeCombo_SelectionChanged"/>
+
+                                <!-- 固定时间参数 -->
+                                <StackPanel x:Name="FixedPanel" Spacing="8">
+                                    <StackPanel Spacing="2">
+                                        <TextBlock Text="几点几分" FontSize="12"
+                                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                        <TextBox x:Name="TimeBox" Text="18:00" FontSize="14"
+                                                 HorizontalAlignment="Left" Width="120"
+                                                 TextChanged="TimeBox_TextChanged"/>
+                                    </StackPanel>
+                                    <CheckBox x:Name="DailyCheck" Content="每天（取消勾选可指定星期）"
+                                              IsCheckedChanged="DailyCheck_Toggled"/>
+                                    <WrapPanel x:Name="DaysPanel" IsVisible="False" Margin="24,0,0,0">
+                                        <CheckBox x:Name="D1" Content="一" Margin="0,3,10,3" IsCheckedChanged="DayCheck_Toggled"/>
+                                        <CheckBox x:Name="D2" Content="二" Margin="0,3,10,3" IsCheckedChanged="DayCheck_Toggled"/>
+                                        <CheckBox x:Name="D3" Content="三" Margin="0,3,10,3" IsCheckedChanged="DayCheck_Toggled"/>
+                                        <CheckBox x:Name="D4" Content="四" Margin="0,3,10,3" IsCheckedChanged="DayCheck_Toggled"/>
+                                        <CheckBox x:Name="D5" Content="五" Margin="0,3,10,3" IsCheckedChanged="DayCheck_Toggled"/>
+                                        <CheckBox x:Name="D6" Content="六" Margin="0,3,10,3" IsCheckedChanged="DayCheck_Toggled"/>
+                                        <CheckBox x:Name="D7" Content="日" Margin="0,3,0,3" IsCheckedChanged="DayCheck_Toggled"/>
+                                    </WrapPanel>
+                                </StackPanel>
+
+                                <!-- 上课前 / 下课时：适用科目 -->
+                                <StackPanel x:Name="SubjectPanel" Spacing="4">
+                                    <TextBlock x:Name="SubjectPanelTitle" Text="适用科目" FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    <ComboBox x:Name="SubjectCombo" FontSize="13"
+                                              SelectionChanged="SubjectCombo_SelectionChanged"/>
+                                </StackPanel>
+
+                                <!-- 上课前 N 分钟 -->
+                                <StackPanel x:Name="BeforePanel" Spacing="4">
+                                    <TextBlock Text="上课前几分钟（0 = 打铃时刻）" FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    <TextBox x:Name="BeforeMinutesBox" Text="1" FontSize="14"
+                                             HorizontalAlignment="Left" Width="100"
+                                             TextChanged="BeforeMinutesBox_TextChanged"/>
+                                    <TextBlock Text="选「全部」则每一节普通课都触发（自习/班会不触发）"
+                                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <!-- 下课时 -->
+                                <StackPanel x:Name="EndPanel" Spacing="4">
+                                    <TextBlock Text="下课后延后几分钟（0 = 准点）" FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    <TextBox x:Name="EndMinutesBox" Text="0" FontSize="14"
+                                             HorizontalAlignment="Left" Width="100"
+                                             TextChanged="EndMinutesBox_TextChanged"/>
+                                </StackPanel>
+
+                                <!-- 放学 -->
+                                <StackPanel x:Name="DayEndPanel" Spacing="4">
+                                    <TextBlock Text="当天最后一节课下课时触发（周末没课不触发）"
+                                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <!-- 闲置 -->
+                                <StackPanel x:Name="IdlePanel" Spacing="4">
+                                    <TextBlock Text="闲置几分钟后触发" FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    <TextBox x:Name="IdleMinutesBox" Text="10" FontSize="14"
+                                             HorizontalAlignment="Left" Width="100"
+                                             TextChanged="IdleMinutesBox_TextChanged"/>
+                                    <TextBlock Text="上课 / 考试时不会触发（防放 PPT 时误熄屏）；鼠标或触屏一动就重新计时"
+                                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <!-- 软件启动后 -->
+                                <StackPanel x:Name="AppStartPanel" Spacing="4">
+                                    <TextBlock Text="启动后延迟几分钟（0 = 立即）" FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    <TextBox x:Name="StartMinutesBox" Text="0" FontSize="14"
+                                             HorizontalAlignment="Left" Width="100"
+                                             TextChanged="StartMinutesBox_TextChanged"/>
+                                    <TextBlock Text="每次打开软件只执行一次，适合开机自动打开课件"
+                                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 连接符 -->
+                        <TextBlock Grid.Column="1" Text="➜" FontSize="20" FontWeight="Bold"
+                                   Foreground="#66FFFFFF" HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+
+                        <!-- ── 动作拼块 ── -->
+                        <Border Grid.Column="2" Background="#1A4CAF50" BorderBrush="#404CAF50" BorderThickness="1"
+                                CornerRadius="8" Padding="14,12">
+                            <StackPanel Spacing="8">
+                                <TextBlock Text="② 执行……" FontSize="13" FontWeight="SemiBold" Foreground="#9FD9A0"/>
+                                <ComboBox x:Name="ActionTypeCombo" FontSize="13"
+                                          SelectionChanged="ActionTypeCombo_SelectionChanged"/>
+
+                                <!-- 打开文件 -->
+                                <StackPanel x:Name="OpenFilePanel" Spacing="4">
+                                    <TextBlock Text="文件路径（双击浏览）" FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBox x:Name="OpenPathBox" FontSize="12"
+                                                 PlaceholderText="如 D:\课件\第一节.pptx"
+                                                 TextChanged="OpenPathBox_TextChanged"/>
+                                        <Button Grid.Column="1" Content="浏览…" Margin="6,0,0,0" FontSize="11"
+                                                Padding="10,3" Click="BrowseFileBtn_Click"/>
+                                    </Grid>
+                                </StackPanel>
+
+                                <!-- 打开科目课件 -->
+                                <StackPanel x:Name="CoursewarePanel" Spacing="4">
+                                    <TextBlock Text="自动打开「上传目录\课件\当堂科目」里最新的一份文件"
+                                               FontSize="12" Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                               TextWrapping="Wrap"/>
+                                    <TextBlock Text="老师只要把课件投递/拷贝进对应科目文件夹，上课前它会自己弹出来。"
+                                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <!-- 播放音频 -->
+                                <StackPanel x:Name="AudioPanel" Spacing="4">
+                                    <TextBlock Text="音频文件（听力录音等）" FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    <Grid ColumnDefinitions="*,Auto">
+                                        <TextBox x:Name="AudioPathBox" FontSize="12"
+                                                 PlaceholderText="如 D:\听力\Unit1.mp3"
+                                                 TextChanged="AudioPathBox_TextChanged"/>
+                                        <Button Grid.Column="1" Content="浏览…" Margin="6,0,0,0" FontSize="11"
+                                                Padding="10,3" Click="BrowseAudioBtn_Click"/>
+                                    </Grid>
+                                </StackPanel>
+
+                                <!-- 熄屏 -->
+                                <StackPanel x:Name="ScreenOffPanel" Spacing="4">
+                                    <TextBlock Text="只关屏幕、不动电脑，鼠标或触屏一点就亮"
+                                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <!-- 关机 / 重启 -->
+                                <StackPanel x:Name="PowerPanel" Spacing="4">
+                                    <TextBlock Text="倒计时秒数（默认 60，期间可取消）" FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    <TextBox x:Name="PowerSecondsBox" Text="60" FontSize="14"
+                                             HorizontalAlignment="Left" Width="100"
+                                             TextChanged="PowerSecondsBox_TextChanged"/>
+                                    <TextBlock Text="触发后系统弹出「即将关机」提示；反悔可在倒计时内运行 shutdown /a 取消"
+                                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
+
+                                <!-- 弹出提醒 -->
+                                <StackPanel x:Name="MsgPanel" Spacing="4">
+                                    <TextBlock Text="提醒内容" FontSize="12"
+                                               Foreground="{DynamicResource TextFillColorSecondaryBrush}"/>
+                                    <TextBox x:Name="MsgBox" FontSize="12"
+                                             PlaceholderText="留空则显示规则名称"
+                                             TextChanged="MsgBox_TextChanged"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <!-- 实时预览 -->
+                    <Border CornerRadius="6" Background="#0DFFFFFF" BorderBrush="#12FFFFFF" BorderThickness="1"
+                            Padding="10,6">
+                        <TextBlock x:Name="PreviewTb" FontSize="12"
+                                   Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                   TextWrapping="Wrap"/>
+                    </Border>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

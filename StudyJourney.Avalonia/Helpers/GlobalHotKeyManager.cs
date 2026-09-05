@@ -76,7 +76,11 @@ public static class GlobalHotKeyManager
                 hInstance = GetModuleHandleW(null),
                 lpszClassName = "StudyJourneyHotKeyWindow"
             };
-            if (RegisterClassW(ref wc) == 0) return false;
+            // #16 修复：上次部分失败（类已注册但窗口未建成）时重试，RegisterClassW 会因
+            // ERROR_CLASS_ALREADY_EXISTS(1410) 返回 0 —— 此非致命，继续创建窗口即可；
+            // 其余错误码才是真失败。原实现任何失败都 return false，导致重试永远失败。
+            if (RegisterClassW(ref wc) == 0 && Marshal.GetLastWin32Error() != 1410)
+                return false;
 
             _hwnd = CreateWindowExW(0, wc.lpszClassName, "StudyJourneyHotKeyWindow", 0,
                 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, wc.hInstance, IntPtr.Zero);
