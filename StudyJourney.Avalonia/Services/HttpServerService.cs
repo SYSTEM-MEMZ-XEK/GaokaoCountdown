@@ -59,9 +59,8 @@ public static class HttpServerService
 {
     private const string DefaultUrl = "http://*:8080";
 
-    // ── 登录凭据（可自行修改）─────────────────────────────
+    // ── 登录凭据兼容（仅 tokens.json 旧格式回填默认用户名用；密码一律走 TeacherAccount 哈希校验）──
     private const string LoginUsername = "Teacher01";
-    private const string LoginPassword = "Study@2026";
 
     // ── 班级信息默认值（空输入时回退）────────────────────
     private const string DefaultClassName = "高三（2）班 智慧黑板";
@@ -371,14 +370,21 @@ public static class HttpServerService
                 catch { /* 非法 JSON 走下面的空校验 */ }
 
                 var account = FindTeacherForLogin(req?.Username);
-                if (account == null || req == null ||
-                    !string.Equals(req.Password, account.Password, StringComparison.Ordinal))
+                // #4-阶段2：统一走 VerifyPassword —— 优先 PBKDF2 哈希；旧 settings.json 里的明文
+                // 账号命中后自动升级为哈希（清空明文），下方登录成功后立即落盘
+                if (account == null || req == null || !account.VerifyPassword(req.Password ?? ""))
                 {
                     RecordLoginFailure(remoteIp);
                     return Results.Json(new { ok = false, error = "invalid credentials" },
                         statusCode: StatusCodes.Status401Unauthorized);
                 }
                 ClearLoginFailures(remoteIp);
+                if (account.JustUpgradedDuringVerify)
+                {
+                    account.JustUpgradedDuringVerify = false;   // 一次性迁移落盘（#4-阶段2：明文不再留盘）
+                    App.SaveSettings();
+                    Helpers.AppLogger.Info($"账号 {account.Username} 密码已自动迁移为哈希存储");
+                }
 
                 string token = Guid.NewGuid().ToString();
                 // rememberMe=true → 1 年；false → 8 小时内存临时会话
@@ -834,17 +840,29 @@ public static class HttpServerService
             string.Equals(a.DisplayName, name, StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>内置默认老师账号（settings.json 的 Teachers 为空时兜底）：语数英物化生 + 管理员</summary>
-    private static readonly TeacherAccount[] FallbackTeachers =
+    /// <summary>内置默认老师账号（settings.json 的 Teachers 为空时兜底）：语数英物化生 + 管理员。
+    /// #4-阶段2：内存中即存哈希，不保留明文常量可落盘对象。</summary>
+    private static readonly TeacherAccount[] FallbackTeachers = BuildFallbackTeachers();
+
+    private static TeacherAccount[] BuildFallbackTeachers()
     {
-        new() { Username = "Teacher01", Password = "Study@2026", DisplayName = "老师", Subject = "管理员" },
-        new() { Username = "teacher01", Password = "123456", DisplayName = "李老师", Subject = "语文" },
-        new() { Username = "teacher02", Password = "123456", DisplayName = "张老师", Subject = "数学" },
-        new() { Username = "teacher03", Password = "123456", DisplayName = "王老师", Subject = "英语" },
-        new() { Username = "teacher04", Password = "123456", DisplayName = "赵老师", Subject = "物理" },
-        new() { Username = "teacher05", Password = "123456", DisplayName = "孙老师", Subject = "化学" },
-        new() { Username = "teacher06", Password = "123456", DisplayName = "周老师", Subject = "生物" },
-    };
+        TeacherAccount Make(string u, string p, string d, string s)
+        {
+            var acc = new TeacherAccount { Username = u, DisplayName = d, Subject = s };
+            acc.SetPassword(p);
+            return acc;
+        }
+        return new[]
+        {
+            Make("Teacher01", "Study@2026", "老师", "管理员"),
+            Make("teacher01", "123456", "李老师", "语文"),
+            Make("teacher02", "123456", "张老师", "数学"),
+            Make("teacher03", "123456", "王老师", "英语"),
+            Make("teacher04", "123456", "赵老师", "物理"),
+            Make("teacher05", "123456", "孙老师", "化学"),
+            Make("teacher06", "123456", "周老师", "生物"),
+        };
+    }
 
     /// <summary>当前请求对应的老师显示名（日志/页面用）：Token 快照 → 账号表 → 兜底默认</summary>
     private static string GetCurrentDisplayName(HttpRequest request)

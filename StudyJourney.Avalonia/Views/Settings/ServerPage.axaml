@@ -79,10 +79,13 @@
                              SelectionChanged="TeacherListBox_SelectionChanged"/>
                     <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="6" Margin="0,8,0,0">
                         <TextBox x:Name="TUsernameBox" PlaceholderText="用户名" FontSize="12"/>
-                        <TextBox x:Name="TPasswordBox" Grid.Column="1" PlaceholderText="密码" FontSize="12"/>
+                        <TextBox x:Name="TPasswordBox" Grid.Column="1" PlaceholderText="密码(留空=不改)" FontSize="12"/>
                         <TextBox x:Name="TDisplayNameBox" Grid.Column="2" PlaceholderText="显示名" FontSize="12"/>
                         <TextBox x:Name="TSubjectBox" Grid.Column="3" PlaceholderText="科目" FontSize="12"/>
                     </Grid>
+                    <TextBlock Text="密码以加密形式存储、不显示不回读；编辑老师时留空 = 保持原密码，新增账号留空 = 初始密码 123456。"
+                               FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}"
+                               TextWrapping="Wrap"/>
                     <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
                         <Button Content="➕ 添加账号" Click="AddTeacherBtn_Click"/>
                         <Button Content="💾 更新选中" Click="UpdateTeacherBtn_Click"/>

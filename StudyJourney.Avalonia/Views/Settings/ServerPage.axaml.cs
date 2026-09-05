@@ -22,10 +22,12 @@ public partial class ServerPage : UserControl, ISettingsPage
     /// <summary>可选科目编辑列表（选科；Load 复制，Apply 写回）</summary>
     private ObservableCollection<string> _subjects = new();
 
+    /// <summary>复制老师账号（#4-阶段2：Password 明文绝不进编辑副本/表单，密码框恒空 = 「留空不改密码」；哈希非敏感可随副本往返）</summary>
     private static TeacherAccount Clone(TeacherAccount a) => new()
     {
         Username = a.Username,
-        Password = a.Password,
+        Password = "",
+        PasswordHash = a.PasswordHash,
         DisplayName = a.DisplayName,
         Subject = a.Subject,
     };
@@ -121,13 +123,13 @@ public partial class ServerPage : UserControl, ISettingsPage
             _subjects.Remove(subject);
     }
 
-    // ── 老师账号管理 ─────────────────────────────────────────
+    // ── 老师账号管理（#4-阶段2：密码框恒空 = 不改密码；只读回显用户名/显示名/科目）──
     private void TeacherListBox_SelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (TeacherListBox.SelectedItem is TeacherAccount acc)
         {
             TUsernameBox.Text = acc.Username;
-            TPasswordBox.Text = acc.Password;
+            TPasswordBox.Text = "";              // 密码不读回（哈希存储，明文不可见）
             TDisplayNameBox.Text = acc.DisplayName;
             TSubjectBox.Text = acc.Subject;
         }
@@ -154,13 +156,15 @@ public partial class ServerPage : UserControl, ISettingsPage
             _ = App.ShowMessageAsync("老师账号", $"用户名「{username}」已存在。");
             return;
         }
-        _teachers.Add(new TeacherAccount
+        var acc = new TeacherAccount
         {
             Username = username,
-            Password = string.IsNullOrWhiteSpace(TPasswordBox.Text) ? "123456" : TPasswordBox.Text.Trim(),
             DisplayName = string.IsNullOrWhiteSpace(TDisplayNameBox.Text) ? username : TDisplayNameBox.Text.Trim(),
             Subject = TSubjectBox.Text?.Trim() ?? "",
-        });
+        };
+        // 新增账号：密码留空则给默认初始密码（同老账号迁移前一致，老师之后可改）
+        acc.SetPassword(string.IsNullOrWhiteSpace(TPasswordBox.Text) ? "123456" : TPasswordBox.Text.Trim());
+        _teachers.Add(acc);
         ClearTeacherForm();
     }
 
@@ -174,7 +178,9 @@ public partial class ServerPage : UserControl, ISettingsPage
             return;
         }
         acc.Username = username;
-        acc.Password = string.IsNullOrWhiteSpace(TPasswordBox.Text) ? "123456" : TPasswordBox.Text.Trim();
+        // #4-阶段2：密码框留空 = 保持原密码（原实现会静默重置成 123456，哈希化后此路径必须废除）
+        var newPass = TPasswordBox.Text?.Trim();
+        if (!string.IsNullOrWhiteSpace(newPass)) acc.SetPassword(newPass);
         acc.DisplayName = string.IsNullOrWhiteSpace(TDisplayNameBox.Text) ? username : TDisplayNameBox.Text.Trim();
         acc.Subject = TSubjectBox.Text?.Trim() ?? "";
         // 刷新显示（ToString 变化不会自动重绘）：重建 ItemsSource 并恢复选中，避免删除等后续操作失效
@@ -182,6 +188,7 @@ public partial class ServerPage : UserControl, ISettingsPage
         TeacherListBox.ItemsSource = null;
         TeacherListBox.ItemsSource = _teachers;
         TeacherListBox.SelectedIndex = idx;
+        TPasswordBox.Text = "";   // 改完即清空密码框，避免误触发下次"更新"改密
     }
 
     private void DeleteTeacherBtn_Click(object? sender, RoutedEventArgs e)

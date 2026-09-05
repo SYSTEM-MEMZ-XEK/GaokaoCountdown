@@ -16,16 +16,56 @@ namespace StudyJourney.Avalonia.Models
         public string DateStr { get; set; } = "";
     }
 
-    /// <summary>老师账号（远程管理登录用）：用户名 / 密码 / 显示名 / 任教科目</summary>
+    /// <summary>老师账号（远程管理登录用）：用户名 / 密码哈希 / 显示名 / 任教科目。
+    /// #4-阶段2：PasswordHash（PBKDF2-SHA256）为唯一存储形式；Password 仅保留给旧版明文数据
+    /// 做一次性迁移（登录命中明文后自动升级为哈希并清空），新数据一律 Password="" + PasswordHash。</summary>
     public class TeacherAccount
     {
         public string Username { get; set; } = "";
         public string Password { get; set; } = "";
+        public string PasswordHash { get; set; } = "";
         public string DisplayName { get; set; } = "";
         public string Subject { get; set; } = "";
 
         /// <summary>列表显示：李老师（语文）· teacher01</summary>
         public override string ToString() => $"{DisplayName}（{Subject}）· {Username}";
+
+        /// <summary>设置新密码：明文 → PBKDF2 哈希，立即清空明文（内存态；落盘由调用方 SaveSettings）</summary>
+        public void SetPassword(string plain)
+        {
+            if (string.IsNullOrEmpty(plain)) return;
+            PasswordHash = Helpers.PasswordHasher.Hash(plain);
+            Password = "";
+        }
+
+        /// <summary>是否仍存旧版明文（等待首次登录迁移）</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool NeedsPlaintextMigration =>
+            string.IsNullOrEmpty(PasswordHash) && !string.IsNullOrEmpty(Password);
+
+        /// <summary>本次校验是否触发明文→哈希自动升级（登录成功路径据此立即落盘；internal 供同程序集清除标记）</summary>
+        [System.Text.Json.Serialization.JsonIgnore]
+        public bool JustUpgradedDuringVerify { get; internal set; }
+
+        /// <summary>校验密码：优先哈希；命中旧明文则就地升级为哈希并置 JustUpgradedDuringVerify</summary>
+        public bool VerifyPassword(string plain)
+        {
+            if (!string.IsNullOrEmpty(PasswordHash))
+                return Helpers.PasswordHasher.Verify(plain, PasswordHash);
+
+            if (!string.IsNullOrEmpty(Password))
+            {
+                // 旧版明文（仅迁移期存在）：验证通过即升级，下次登录起走哈希
+                bool ok = string.Equals(plain, Password, StringComparison.Ordinal);
+                if (ok)
+                {
+                    SetPassword(plain);
+                    JustUpgradedDuringVerify = true;
+                }
+                return ok;
+            }
+            return false;
+        }
     }
 
     public class AppSettings
@@ -263,17 +303,34 @@ namespace StudyJourney.Avalonia.Models
         public string ClassName { get; set; } = "高三（2）班 智慧黑板";
         /// <summary>默认老师显示名（老师账号列表为空时的兜底）</summary>
         public string TeacherName { get; set; } = "老师";
-        /// <summary>老师账号列表（语数英物化生 6 位 + 管理员），登录与显示名来源</summary>
-        public List<TeacherAccount> Teachers { get; set; } = new()
+        /// <summary>老师账号列表（语数英物化生 6 位 + 管理员），登录与显示名来源。
+        /// #4-阶段2：默认账号存 PBKDF2 哈希（SetPassword），settings.json 不再出现明文密码。</summary>
+        public List<TeacherAccount> Teachers { get; set; } = DefaultTeachers();
+
+        private static List<TeacherAccount> DefaultTeachers() => new()
         {
-            new TeacherAccount { Username = "Teacher01", Password = "Study@2026", DisplayName = "老师", Subject = "管理员" },
-            new TeacherAccount { Username = "teacher01", Password = "123456", DisplayName = "李老师", Subject = "语文" },
-            new TeacherAccount { Username = "teacher02", Password = "123456", DisplayName = "张老师", Subject = "数学" },
-            new TeacherAccount { Username = "teacher03", Password = "123456", DisplayName = "王老师", Subject = "英语" },
-            new TeacherAccount { Username = "teacher04", Password = "123456", DisplayName = "赵老师", Subject = "物理" },
-            new TeacherAccount { Username = "teacher05", Password = "123456", DisplayName = "孙老师", Subject = "化学" },
-            new TeacherAccount { Username = "teacher06", Password = "123456", DisplayName = "周老师", Subject = "生物" },
+            MakeAccount("Teacher01", "Study@2026", "老师", "管理员"),
+            MakeAccount("teacher01", "123456", "李老师", "语文"),
+            MakeAccount("teacher02", "123456", "张老师", "数学"),
+            MakeAccount("teacher03", "123456", "王老师", "英语"),
+            MakeAccount("teacher04", "123456", "赵老师", "物理"),
+            MakeAccount("teacher05", "123456", "孙老师", "化学"),
+            MakeAccount("teacher06", "123456", "周老师", "生物"),
         };
+
+        /// <summary>构造预置哈希的默认账号（仅在文件缺失/恢复默认时运行一次，成本 ~0.5s 可接受）</summary>
+        private static TeacherAccount MakeAccount(string username, string plainPassword,
+            string displayName, string subject)
+        {
+            var acc = new TeacherAccount
+            {
+                Username = username,
+                DisplayName = displayName,
+                Subject = subject,
+            };
+            acc.SetPassword(plainPassword);
+            return acc;
+        }
         /// <summary>
         /// 可选科目（选科）：课表编辑只在范围内选。默认物化生组合（语数英+物化生），不含政史地。
         /// 可在设置页「服务器 → 可选科目」增删。
