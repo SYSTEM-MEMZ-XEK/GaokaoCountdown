@@ -160,7 +160,7 @@ namespace StudyJourney.Avalonia.Models
         }
     }
 
-    /// <summary>调课操作中使用的课程位置标识</summary>
+    /// <summary>调课操作中使用的课程位置标识（含时段元数据：#9 周视图单元格直写 Entries 用）</summary>
     public class CourseSlot
     {
         public int RowIndex { get; set; }
@@ -168,6 +168,10 @@ namespace StudyJourney.Avalonia.Models
         public string Subject { get; set; } = "";
         public string TimeLabel { get; set; } = "";
         public string DayName { get; set; } = "";
+        public int Period { get; set; } = 1;
+        public string StartTimeStr { get; set; } = "08:00";
+        public string EndTimeStr { get; set; } = "08:45";
+        public PeriodType Type { get; set; } = PeriodType.Normal;
 
         public string Display => DayName + " " + TimeLabel + (string.IsNullOrEmpty(Subject) ? " (空)" : " " + Subject);
         public bool IsEmpty => string.IsNullOrEmpty(Subject);
@@ -274,7 +278,7 @@ namespace StudyJourney.Avalonia.Models
             try
             {
                 var json = JsonSerializer.Serialize(this, _jsonOpts);
-                File.WriteAllText(_schedulePath, json);
+                Helpers.FileAtomic.WriteAllText(_schedulePath, json);   // #6：原子写，防半截 JSON
             }
             catch (Exception ex)
             {

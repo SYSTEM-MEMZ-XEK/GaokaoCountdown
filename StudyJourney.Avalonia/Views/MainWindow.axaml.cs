@@ -108,6 +108,7 @@ public partial class MainWindow : Window
         {
             App.SettingsChanged -= OnSettingsChanged;
             if (App.Reminders != null) App.Reminders.Reminder -= OnReminder;
+            _timer?.Stop();                        // #19 修复：补停 1 秒主循环，窗口关闭后不再空转每秒 Tick
             _maximizeCheckTimer?.Stop();
             _classEndRestoreTimer?.Stop();
             _weatherTimer?.Stop();

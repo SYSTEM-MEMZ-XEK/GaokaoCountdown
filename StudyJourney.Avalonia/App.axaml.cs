@@ -28,11 +28,36 @@ public partial class App : Application
     /// <summary>设置被保存后触发（主窗口/悬浮栏等订阅并刷新）</summary>
     public static event Action? SettingsChanged;
 
-    /// <summary>保存设置并广播变更</summary>
+    /// <summary>保存设置并广播变更（线程安全：#2 修复 —— Kestrel 后台线程调用时自动封送 UI 线程再 Invoke，订阅者无需关心来源线程）</summary>
     public static void SaveSettings()
     {
         Settings.Save();
-        SettingsChanged?.Invoke();
+        if (Dispatcher.UIThread.CheckAccess())
+            SettingsChanged?.Invoke();
+        else
+            Dispatcher.UIThread.Post(() => SettingsChanged?.Invoke());
+    }
+
+    /// <summary>
+    /// 统一入口：从磁盘重载课表并广播 DataChanged（线程安全）。
+    /// 远程 PUT /api/schedule、恢复备份、编辑器保存一律走这里，避免各处自行 Post 造成不一致（报告第四节 A）。
+    /// 内部 UI 线程封送：ScheduleManager._data 被主窗口每秒 Tick 读取。
+    /// </summary>
+    public static void ReloadScheduleFromDisk()
+    {
+        if (Dispatcher.UIThread.CheckAccess())
+        {
+            try { Schedule.Reload(); }
+            catch (Exception ex) { Helpers.AppLogger.Error("课表重载到内存失败", ex); }
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(() =>
+            {
+                try { Schedule.Reload(); }
+                catch (Exception ex) { Helpers.AppLogger.Error("课表重载到内存失败", ex); }
+            });
+        }
     }
 
     /// <summary>通过系统托盘发送 Windows 通知（提醒方式=Windows 通知时使用）</summary>
@@ -87,8 +112,9 @@ public partial class App : Application
             desktop.MainWindow = _mainWindow;
             desktop.ShutdownRequested += (_, _) => Cleanup();
 
-            // 提醒服务：课表/考试关键节点触发（声音 + 事件）
-            Reminders = new ReminderService(Schedule, Settings);
+            // 提醒服务：课表/考试关键节点触发（声音 + 事件）。
+            // #3 修复后不再注入 Settings 实例：ReminderService 内部动态读 App.Settings
+            Reminders = new ReminderService(Schedule);
             Reminders.Start();
 
             SetupTrayIcon();
@@ -113,13 +139,13 @@ public partial class App : Application
         base.OnFrameworkInitializationCompleted();
     }
 
-    /// <summary>延迟启动远程 HTTP 服务（供老师局域网访问；StateChanged 事件会同步主窗口/设置页开关状态）</summary>
+    /// <summary>延迟启动远程 HTTP 服务（供老师局域网访问；#10：走 StartAsync 不阻塞任何线程）</summary>
     private static async System.Threading.Tasks.Task StartHttpServerDelayedAsync()
     {
         try
         {
             await System.Threading.Tasks.Task.Delay(1500);
-            HttpServerService.Start();
+            await HttpServerService.StartAsync();
             Helpers.AppLogger.Info($"远程服务已自动启动，端口 {HttpServerService.Port}");
         }
         catch (Exception ex)

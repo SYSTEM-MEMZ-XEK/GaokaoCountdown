@@ -10,9 +10,18 @@ namespace StudyJourney.Avalonia.Views.Settings;
 
 public partial class CountdownPage : UserControl, ISettingsPage
 {
+    /// <summary>自定义倒计时编辑副本（#8：Load 复制、Apply 写回，未保存的增删/编辑不触碰 App.Settings，
+    /// 与 ServerPage 的 _teachers 同款心智模型）</summary>
+    private System.Collections.ObjectModel.ObservableCollection<CustomCountdown> _countdowns = new();
+
+    /// <summary>#8：自定义倒计时是否有未保存修改（增删/单元格编辑置位；切页与关窗时提示）</summary>
+    private bool _countdownDirty;
+
     public CountdownPage()
     {
         InitializeComponent();
+        // DataGrid 单元格编辑（改名/改日期）算 dirty；Load 后首次挂上，避免构造期误触发
+        CustomCountdownGrid.CellEditEnding += (_, _) => _countdownDirty = true;
     }
 
     public void Load(AppSettings s)
@@ -37,7 +46,11 @@ public partial class CountdownPage : UserControl, ISettingsPage
         ShowSecondsCheck.IsChecked = s.ShowSeconds;
         GaokaoDateBox.Text = s.GaokaoDateStr;
         StartDateBox.Text = s.StartDateStr;
-        CustomCountdownGrid.ItemsSource = s.CustomCountdowns;
+        // #8：倒计时列表复制到副本编辑（与字体/日期等控件一致：改完点保存才落盘）
+        _countdowns = new System.Collections.ObjectModel.ObservableCollection<CustomCountdown>(
+            (s.CustomCountdowns ?? new()).Select(c => new CustomCountdown { Name = c.Name, DateStr = c.DateStr }));
+        CustomCountdownGrid.ItemsSource = _countdowns;
+        _countdownDirty = false;
 
         TextColorBox.Text = s.TextColor.ToString();
         AccentColorBox.Text = s.AccentColor.ToString();
@@ -63,7 +76,14 @@ public partial class CountdownPage : UserControl, ISettingsPage
 
         if (TryParseColor(TextColorBox.Text ?? "#FFFFFF", out var tc)) s.TextColor = tc;
         if (TryParseColor(AccentColorBox.Text ?? "#2B6CB0", out var ac)) s.AccentColor = ac;
+
+        // #8：倒计时副本写回设置
+        s.CustomCountdowns = _countdowns.Select(c => new CustomCountdown { Name = c.Name, DateStr = c.DateStr }).ToList();
+        _countdownDirty = false;
     }
+
+    /// <summary>#8：切页/关窗提示依据 —— 自定义倒计时是否有未保存修改</summary>
+    public bool IsDirty => _countdownDirty;
 
     // ── 滑条联动：数字随滑动实时更新 ────────────────────────
     private void FontSizeSlider_ValueChanged(object? sender, RangeBaseValueChangedEventArgs e)
@@ -113,15 +133,15 @@ public partial class CountdownPage : UserControl, ISettingsPage
 
     private Window? GetWindow() => TopLevel.GetTopLevel(this) as Window;
 
-    // ── 自定义倒计时：增删 + 网格刷新（List 需手动刷新 ItemsSource）──
+    // ── 自定义倒计时：增删 + 网格刷新（#8：操作的是编辑副本，点「保存」才落盘）──
     private void AddCountdownBtn_Click(object? sender, RoutedEventArgs e)
     {
-        var list = App.Settings.CustomCountdowns;
-        list.Add(new CustomCountdown
+        _countdowns.Add(new CustomCountdown
         {
             Name = "新倒计时",
             DateStr = DateTime.Today.AddDays(30).ToString("yyyy-MM-dd")
         });
+        _countdownDirty = true;
         RefreshGrid();
     }
 
@@ -129,7 +149,8 @@ public partial class CountdownPage : UserControl, ISettingsPage
     {
         if (CustomCountdownGrid.SelectedItem is CustomCountdown c)
         {
-            App.Settings.CustomCountdowns.Remove(c);
+            _countdowns.Remove(c);
+            _countdownDirty = true;
             RefreshGrid();
         }
     }
@@ -137,6 +158,6 @@ public partial class CountdownPage : UserControl, ISettingsPage
     private void RefreshGrid()
     {
         CustomCountdownGrid.ItemsSource = null;
-        CustomCountdownGrid.ItemsSource = App.Settings.CustomCountdowns;
+        CustomCountdownGrid.ItemsSource = _countdowns;
     }
 }

@@ -2,6 +2,7 @@ using System;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -26,6 +27,12 @@ public partial class ScheduleEditorWindow : Window
         EntryGrid.ItemsSource = App.Schedule.Data.Entries;
         RefreshExamGrid();
 
+        // #9：关闭前有未保存修改 → 确认；课表被远程/恢复替换（DataChanged 且实例变化）→ 自动重绑
+        Closing += OnClosing;
+        App.Schedule.DataChanged += OnScheduleDataChanged;
+        Closed += (_, _) => App.Schedule.DataChanged -= OnScheduleDataChanged;
+        _baselineJson = SerializeData();
+
         // 周视图：调休下拉 + 时段模板 + 网格
         foreach (var name in DayNames)
         {
@@ -36,6 +43,49 @@ public partial class ScheduleEditorWindow : Window
         AdjustToDayCb.SelectedIndex = 1;
         BuildTemplateList();
         RebuildTimetable();
+    }
+
+    // ── #9：未保存修改检测（JSON 快照对比）+ 远程变更重绑 ──
+    private string _baselineJson = "";
+    private bool _closeConfirmed;
+    private List<(int Period, string Start, string End, PeriodType Type)> _rowSlots = new();
+
+    private static string SerializeData()
+        => JsonSerializer.Serialize(App.Schedule.Data, new JsonSerializerOptions { WriteIndented = true });
+
+    /// <summary>打开/上次保存以来是否有内容变化（取消/关窗确认用）</summary>
+    private bool HasChanges => SerializeData() != _baselineJson;
+
+    /// <summary>标记当前内容为已保存基线（保存/取消/数据被替换后调用）</summary>
+    private void MarkClean() => _baselineJson = SerializeData();
+
+    private async void OnClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (_closeConfirmed || !HasChanges) return;
+        e.Cancel = true;
+        var ok = await Helpers.DialogHelper.ShowConfirmAsync(this, "放弃修改",
+            "有未保存的课表修改，确定放弃并关闭吗？", "放弃并关闭", "继续编辑");
+        if (!ok) return;
+        _closeConfirmed = true;
+        Close();
+    }
+
+    /// <summary>课表数据被替换（远程 PUT /api/schedule → Reload、恢复备份、导入）时重绑全部视图；
+    /// 本窗口自己的 Save 不替换实例（ReferenceEquals 判断）→ 不重绑避免打断编辑</summary>
+    private void OnScheduleDataChanged()
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            var data = App.Schedule.Data;
+            if (ReferenceEquals(EntryGrid.ItemsSource, data.Entries) &&
+                ReferenceEquals(ExamGrid.ItemsSource, data.Exams))
+                return;   // 实例未变：只是本窗口保存触发的通知，跳过
+            MarkClean();
+            RefreshGrid();
+            RefreshExamGrid();
+            BuildTemplateList();
+            RebuildTimetable();
+        });
     }
 
     // ── 课表 ────────────────────────────────────────────────
@@ -111,11 +161,15 @@ public partial class ScheduleEditorWindow : Window
         var last = exam.Subjects.LastOrDefault();
         var start = TimeSpan.TryParse(last?.EndTimeStr, out var t) ? t : TimeSpan.FromHours(9);
         var end = start.Add(TimeSpan.FromHours(2));
+        // #24 修复：考试科目不支持跨天 → 超过 23:59 夹取；Format 用 TotalHours 拼两位，
+        // 避免旧实现 start.Hours 在 23:30+2h 时回绕成 01:30（次日混淆）且 24:00 无法解析
+        if (end >= TimeSpan.FromDays(1)) end = new TimeSpan(23, 59, 0);
+        static string Format(TimeSpan ts) => $"{(int)ts.TotalHours:D2}:{ts.Minutes:D2}";
         exam.Subjects.Add(new ExamSubject
         {
             Name = "新科目",
-            StartTimeStr = $"{start.Hours:D2}:{start.Minutes:D2}",
-            EndTimeStr = $"{end.Hours:D2}:{end.Minutes:D2}"
+            StartTimeStr = Format(start),
+            EndTimeStr = Format(end)
         });
         ExamStatusTb.Text = $"已添加科目，当前共 {exam.Subjects.Count} 个科目";
     }
@@ -133,6 +187,7 @@ public partial class ScheduleEditorWindow : Window
     private void SaveExamsBtn_Click(object? sender, RoutedEventArgs e)
     {
         App.Schedule.Save();
+        MarkClean();   // #9：即改即存 → 基线对齐
         ExamStatusTb.Text = ExamGrid.SelectedItem is ExamEntry exam
             ? $"✓ 已保存「{exam.Name}」及 {exam.Subjects.Count} 个科目 → schedule.json"
             : "✓ 考试日程已保存到 schedule.json";
@@ -143,6 +198,7 @@ public partial class ScheduleEditorWindow : Window
     {
         App.Schedule.Save();
         RebuildTimetable();
+        MarkClean();   // #9：保存后视为无未保存修改（关窗/取消确认依据）
         if (sender is Button btn)
         {
             var old = btn.Content;
@@ -157,9 +213,17 @@ public partial class ScheduleEditorWindow : Window
         }
     }
 
-    private void CancelBtn_Click(object? sender, RoutedEventArgs e)
+    private async void CancelBtn_Click(object? sender, RoutedEventArgs e)
     {
+        // #9：取消 = 放弃全部未保存修改（Reload 回磁盘内容）→ 有修改先确认
+        if (HasChanges)
+        {
+            var ok = await Helpers.DialogHelper.ShowConfirmAsync(this, "放弃修改",
+                "有未保存的修改，确定放弃并重新加载课表吗？", "放弃修改", "继续编辑");
+            if (!ok) return;
+        }
         App.Schedule.Reload();
+        MarkClean();
         RefreshGrid();
         RefreshExamGrid();
         BuildTemplateList();
@@ -238,6 +302,7 @@ public partial class ScheduleEditorWindow : Window
             if (string.IsNullOrEmpty(path)) return;
 
             App.Schedule.Save();   // 先落盘当前编辑
+            MarkClean();
             File.Copy(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "schedule.json"), path, overwrite: true);
             ShowStatus("课表已导出。");
         }
@@ -258,6 +323,7 @@ public partial class ScheduleEditorWindow : Window
 
             App.SaveSettings();
             App.Schedule.Save();
+            MarkClean();
 
             foreach (var name in new[] { "settings.json", "schedule.json" })
             {
@@ -358,6 +424,9 @@ public partial class ScheduleEditorWindow : Window
                      .Select(g => (Period: g.Key.Period, Start: g.Key.StartTimeStr, End: g.Key.EndTimeStr, Type: g.Key.Type))
                      .OrderBy(x => x.Period).ToList();
 
+        // #9：记录每行的时段元数据（周视图单元格写 Entries 需要 Period/时间/类型）
+        _rowSlots = slots.Select(s => (s.Period, s.Start, s.End, s.Type)).ToList();
+
         var rows = new List<TimetableRow>();
         foreach (var (period, start, end, type) in slots)
         {
@@ -379,38 +448,68 @@ public partial class ScheduleEditorWindow : Window
         return rows;
     }
 
-    /// <summary>从网格回写 Entries 并保存</summary>
+    /// <summary>
+    /// #9 修复：把周视图 rows 同步到 Entries（按 星期+节次 逐格 upsert/删除）。
+    /// 原实现 Entries.Clear()+全量重建 —— 会覆盖用户在 DataGrid 里直改的内容（双入口互相覆盖）。
+    /// 调用方（调课/移动/代课/调休按钮）均已先 RebuildTimetable()，rows 即 Entries 的最新投影，
+    /// diff 结果等价于完整覆盖且不丢 DataGrid 编辑。
+    /// </summary>
     private void SaveTimetableToEntries(List<TimetableRow> rows)
     {
         var data = App.Schedule.Data;
         if (data == null) return;
-        data.Entries.Clear();
 
-        var temps = data.TimeTemplates;
         for (int i = 0; i < rows.Count; i++)
         {
-            var row = rows[i];
-            var slot = i < temps.Count
-                ? (Period: temps[i].Period, StartTime: temps[i].StartTime, EndTime: temps[i].EndTime, Type: temps[i].Type)
-                : (Period: i + 1, StartTime: "08:00", EndTime: "08:45", Type: PeriodType.Normal);
-
+            var slot = i < _rowSlots.Count
+                ? _rowSlots[i]
+                : (Period: i + 1, Start: "08:00", End: "08:45", Type: PeriodType.Normal);
             for (int d = 0; d < 7; d++)
             {
-                var subj = row[d]?.Trim();
-                if (string.IsNullOrEmpty(subj)) continue;
-                data.Entries.Add(new ScheduleEntry
+                var cell = new CourseSlot
                 {
-                    DayOfWeek = d + 1,
+                    DayIndex = d,
                     Period = slot.Period,
-                    Subject = subj,
-                    StartTimeStr = slot.StartTime,
-                    EndTimeStr = slot.EndTime,
-                    Type = slot.Type
-                });
+                    StartTimeStr = slot.Start,
+                    EndTimeStr = slot.End,
+                    Type = slot.Type,
+                };
+                WriteEntryFromCell(cell, rows[i][d]);
             }
         }
         data.SortEntries();
         App.Schedule.Save();
+        MarkClean();   // 调课/移动/代课/调休均为即改即存 → 基线对齐，避免关窗误报
+    }
+
+    /// <summary>按 (星期,节次) 对 Entries 增删改：文本非空 → upsert Subject；空 → 删除该条目（#9）</summary>
+    private static void WriteEntryFromCell(CourseSlot slot, string cellText)
+    {
+        var data = App.Schedule.Data;
+        string text = cellText.Trim();
+        var entry = data.Entries.FirstOrDefault(e =>
+            e.DayOfWeek == slot.DayIndex + 1 && e.Period == slot.Period);
+        if (text.Length == 0)
+        {
+            if (entry != null) data.Entries.Remove(entry);
+        }
+        else if (entry != null)
+        {
+            entry.Subject = text;
+        }
+        else
+        {
+            data.Entries.Add(new ScheduleEntry
+            {
+                DayOfWeek = slot.DayIndex + 1,
+                Period = slot.Period,
+                Subject = text,
+                StartTimeStr = slot.StartTimeStr,
+                EndTimeStr = slot.EndTimeStr,
+                Type = slot.Type,
+            });
+            data.SortEntries();
+        }
     }
 
     /// <summary>重建网格 UI（代码动态构建，列=时段+7天）</summary>
@@ -445,7 +544,12 @@ public partial class ScheduleEditorWindow : Window
                     DayIndex = d,
                     Subject = row[d],
                     TimeLabel = row.TimeLabel,
-                    DayName = DayNames[d]
+                    DayName = DayNames[d],
+                    // #9：携带时段元数据，单元格编辑可直接 upsert Entries
+                    Period = _rowSlots.Count > i ? _rowSlots[i].Period : i + 1,
+                    StartTimeStr = _rowSlots.Count > i ? _rowSlots[i].Start : "08:00",
+                    EndTimeStr = _rowSlots.Count > i ? _rowSlots[i].End : "08:45",
+                    Type = _rowSlots.Count > i ? _rowSlots[i].Type : PeriodType.Normal,
                 };
 
                 var border = new Border
@@ -468,8 +572,12 @@ public partial class ScheduleEditorWindow : Window
                 };
                 tb.TextChanged += (_, _) =>
                 {
+                    // #9 修复：周视图编辑直写 Entries（原只写 _rows 快照，周视图保存时 Clear 重建会覆盖 DataGrid 的修改）
                     if (tb.Tag is CourseSlot s && _rows != null && s.RowIndex < _rows.Count)
-                        _rows[s.RowIndex][s.DayIndex] = tb.Text;
+                    {
+                        _rows[s.RowIndex][s.DayIndex] = tb.Text ?? "";
+                        WriteEntryFromCell(s, tb.Text ?? "");
+                    }
                 };
                 tb.PointerPressed += (_, e) =>
                 {
@@ -583,6 +691,7 @@ public partial class ScheduleEditorWindow : Window
     private async void SwapCoursesBtn_Click(object? sender, RoutedEventArgs e)
     {
         if (!ValidateSwapSelection() || _rows == null) return;
+        RebuildTimetable();   // #9：先以 Entries 最新投影重建 rows，避免覆盖 DataGrid 直改
         if (_swapSource!.IsEmpty && _swapTarget!.IsEmpty)
         {
             SwapHintTb.Text = "⚠ 两个位置都是空的，无需交换";
@@ -602,6 +711,7 @@ public partial class ScheduleEditorWindow : Window
     private async void MoveCourseBtn_Click(object? sender, RoutedEventArgs e)
     {
         if (!ValidateSwapSelection() || _rows == null) return;
+        RebuildTimetable();   // #9：先以 Entries 最新投影重建 rows，避免覆盖 DataGrid 直改
         if (_swapSource!.IsEmpty)
         {
             SwapHintTb.Text = "⚠ 源位置是空的，请选有课程的位置";
@@ -621,6 +731,7 @@ public partial class ScheduleEditorWindow : Window
     private async void SubstituteCourseBtn_Click(object? sender, RoutedEventArgs e)
     {
         if (!ValidateSwapSelection() || _rows == null) return;
+        RebuildTimetable();   // #9：先以 Entries 最新投影重建 rows，避免覆盖 DataGrid 直改
         if (_swapSource!.IsEmpty)
         {
             SwapHintTb.Text = "⚠ 请选有课程的位置作为来源";
@@ -671,6 +782,7 @@ public partial class ScheduleEditorWindow : Window
             {
                 App.Schedule.Data.TimeTemplates.Remove(t);
                 App.Schedule.Save();
+                MarkClean();
                 BuildTemplateList();
                 RebuildTimetable();
             };
@@ -699,6 +811,7 @@ public partial class ScheduleEditorWindow : Window
         }
         data.TimeTemplates.Add(new TimeTemplate { Period = nextP, StartTime = start, EndTime = end });
         App.Schedule.Save();
+        MarkClean();
         BuildTemplateList();
         RebuildTimetable();
     }
@@ -707,6 +820,7 @@ public partial class ScheduleEditorWindow : Window
     {
         if (App.Schedule.Data.TimeTemplates.Count == 0) return;
         App.Schedule.Save();
+        MarkClean();
         RebuildTimetable();
     }
 
@@ -716,6 +830,7 @@ public partial class ScheduleEditorWindow : Window
         int from = AdjustFromDayCb.SelectedIndex;
         int to = AdjustToDayCb.SelectedIndex;
         if (from < 0 || to < 0 || from == to || _rows == null) return;
+        RebuildTimetable();   // #9：先以 Entries 最新投影重建 rows，避免覆盖 DataGrid 直改
 
         if (!await Helpers.DialogHelper.ShowConfirmAsync(this, "调休确认", $"确定将{DayNames[from]}的课程复制到{DayNames[to]}吗？")) return;
         foreach (var row in _rows)
@@ -727,6 +842,8 @@ public partial class ScheduleEditorWindow : Window
 
     private void SaveScheduleBtn_Click(object? sender, RoutedEventArgs e)
     {
+        if (_rows == null) return;
+        RebuildTimetable();   // #9：先以 Entries 最新投影重建，保留 DataGrid 直改，再落盘
         if (_rows == null) return;
         SaveTimetableToEntries(_rows);
         RefreshGrid();

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Threading;
 using StudyJourney.Avalonia.Models;
 using StudyJourney.Avalonia.Services;
 
@@ -40,7 +41,14 @@ public partial class ServerPage : UserControl, ISettingsPage
         // 彼时其后的控件尚未实例化导致空引用崩溃）
         UploadDirCombo.SelectedIndex = 0;
         UpdateDirPreview();
+        // 附带项（审查报告 #2）：StateChanged 本是无订阅者的死代码，注释却声称"会同步设置页"。
+        // 这里真正接上 —— 服务运行状态变化（自动启动/异常退出）时实时同步开关 UI。
+        // StateChanged 可能来自后台线程，回调内 Post 到 UI 线程执行。
+        HttpServerService.StateChanged += OnServerStateChanged;
+        DetachedFromVisualTree += (_, _) => HttpServerService.StateChanged -= OnServerStateChanged;
     }
+
+    private void OnServerStateChanged() => Dispatcher.UIThread.Post(UpdateStatus);
 
     /// <summary>进入页面：从设置读入控件 + 同步服务状态 + 刷新日志</summary>
     public void Load(AppSettings s)
@@ -220,30 +228,48 @@ public partial class ServerPage : UserControl, ISettingsPage
             : "课件将保存到：" + path;
     }
 
-    private void ServerToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
+    /// <summary>服务启停进行中标记（防 toggle 重入 + 状态文本由操作方负责，避免 UpdateStatus 回拨开关）</summary>
+    private bool _serverBusy;
+
+    private async void ServerToggle_IsCheckedChanged(object? sender, RoutedEventArgs e)
     {
+        if (_serverBusy) return;
         if (ServerToggle.IsChecked == true)
         {
+            _serverBusy = true;
             try
             {
-                HttpServerService.Start();
+                ServerToggle.IsEnabled = false;
+                ServerStatusTb.Text = "启动中…";
+                // #10 修复：异步启动，UI 不卡死（原 Start() 同步等待最长 5s，触屏上像死机）
+                await HttpServerService.StartAsync();
             }
             catch (Exception ex)
             {
-                ServerToggle.IsChecked = false;   // 启动失败回滚
+                // 启动失败回滚：拨回 false 会触发本 handler（busy 期间直接 return，无递归问题）
+                ServerToggle.IsChecked = false;
                 Helpers.AppLogger.Error($"远程服务启动失败: {ex.Message}", ex);
-                _ = App.ShowMessageAsync("远程服务", $"启动失败：{ex.Message}");
+                await App.ShowMessageAsync("远程服务", $"启动失败：{ex.Message}");
+            }
+            finally
+            {
+                _serverBusy = false;
+                ServerToggle.IsEnabled = true;
+                UpdateStatus();
             }
         }
         else
         {
-            HttpServerService.Stop();
+            // #5：Stop 内部等待后台线程退出（≤8s），此处异步执行避免卡 UI
+            await System.Threading.Tasks.Task.Run(HttpServerService.Stop);
+            UpdateStatus();
         }
-        UpdateStatus();
     }
 
     private void UpdateStatus()
     {
+        // 启停进行中：状态文本由操作代码负责，绝不回拨开关（防 StartAsync 等待期 IsRunning=false 把开关关掉）
+        if (_serverBusy) return;
         ServerToggle.IsChecked = HttpServerService.IsRunning;
         if (HttpServerService.IsRunning)
         {

@@ -25,8 +25,27 @@ public partial class SettingsWindow : FluentAvalonia.UI.Windowing.FAAppWindow
         InitializeComponent();
         Helpers.WindowBackdropHelper.EnsureBackground(this);   // Win10 无 Mica → 降级不透明背景
         Icon = LoadBitmapIcon();   // FAAppWindow.Icon 是 IImage，需用 PNG（Bitmap 不支持 ico）
+        Closing += OnClosing;      // #8：关窗前检查未保存修改
         // 默认显示倒计时页（含数据加载）
         ShowPage(new CountdownPage());
+    }
+
+    /// <summary>#8 修复：允许关窗的标记（用户已在确认框选择保存/放弃后置位，避免二次拦截）</summary>
+    private bool _closeConfirmed;
+
+    /// <summary>#8 修复：关窗前若当前页有未保存修改 → 三选一（保存并关闭 / 放弃修改 / 取消）</summary>
+    private async void OnClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (_closeConfirmed) return;
+        if (_currentPage is not ISettingsPage sp || !sp.IsDirty) return;
+
+        e.Cancel = true;   // 先拦下，等用户选择后再真正关闭
+        var choice = await Helpers.DialogHelper.ShowChoiceAsync(this,
+            "未保存的修改", "当前页面有未保存的修改，关闭前如何处理？",
+            "保存并关闭", "放弃修改", "取消");
+        if (choice == 1) { sp.Apply(App.Settings); App.SaveSettings(); _closeConfirmed = true; Close(); }
+        else if (choice == 2) { _closeConfirmed = true; Close(); }
+        // choice == 0 → 留在本页
     }
 
     /// <summary>FAAppWindow 标题栏图标（IImage，用 PNG）</summary>
@@ -55,9 +74,20 @@ public partial class SettingsWindow : FluentAvalonia.UI.Windowing.FAAppWindow
         });
     }
 
-    /// <summary>切换页面：Load 当前设置 + 滑动淡入动画（渲染线程驱动，可用「页面动画」开关关闭）</summary>
+    /// <summary>切换页面：#8 修复 —— 旧页有未保存修改时先三选一（保存并切换/放弃修改/留在本页），
+    /// 避免切页静默丢失；然后 Load 当前设置 + 滑动淡入动画（渲染线程驱动，可用「页面动画」开关关闭）</summary>
     private async void ShowPage(Control page)
     {
+        if (_currentPage is ISettingsPage oldPage && oldPage != page && oldPage.IsDirty)
+        {
+            var choice = await Helpers.DialogHelper.ShowChoiceAsync(this,
+                "未保存的修改", "当前页面有未保存的修改，如何处理？",
+                "保存并切换", "放弃修改", "留在本页");
+            if (choice == 0) return;                                  // 留在本页，不切换
+            if (choice == 1) { oldPage.Apply(App.Settings); App.SaveSettings(); }  // 保存并切换
+            // choice == 2（放弃修改）→ 直接切换，由新页 Load 覆盖
+        }
+
         _currentPage = page;
         if (page is ISettingsPage sp) sp.Load(App.Settings);
 

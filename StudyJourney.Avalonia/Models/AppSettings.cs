@@ -289,7 +289,7 @@ namespace StudyJourney.Avalonia.Models
             try
             {
                 string json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(SettingsPath, json);
+                Helpers.FileAtomic.WriteAllText(SettingsPath, json);   // #6：原子写，防半截 JSON
             }
             catch (Exception ex)
             {

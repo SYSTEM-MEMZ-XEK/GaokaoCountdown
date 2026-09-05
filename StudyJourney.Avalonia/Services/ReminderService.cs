@@ -53,7 +53,9 @@ public class ReminderService : IDisposable
     private const uint SND_ASYNC = 0x0001;
 
     private readonly ScheduleManager _manager;
-    private readonly AppSettings _settings;
+    // #3 修复：不再缓存 AppSettings 实例引用（重置设置/恢复备份会替换 App.Settings 实例，
+    // 旧缓存将永远读不到新值）。一律经 App.Settings 属性动态读取。
+    // 编码规约：任何长期存活组件不得缓存 App.Settings 实例引用。
     private readonly DispatcherTimer _timer;
 
     private readonly HashSet<string> _firedKeys = new();
@@ -65,10 +67,9 @@ public class ReminderService : IDisposable
 
     public event EventHandler<ReminderEventArgs>? Reminder;
 
-    public ReminderService(ScheduleManager manager, AppSettings settings)
+    public ReminderService(ScheduleManager manager)
     {
         _manager = manager;
-        _settings = settings;
         _onDataChanged = () => _cachedDay = DateTime.MinValue;
         _manager.DataChanged += _onDataChanged;
 
@@ -99,7 +100,7 @@ public class ReminderService : IDisposable
         foreach (var entry in _cachedEntries)
             CheckClassReminders(entry, now, _cachedEntries);
 
-        if (_settings.EnableExamMode)
+        if (App.Settings.EnableExamMode)
             CheckExamReminders(now);
     }
 
@@ -110,35 +111,35 @@ public class ReminderService : IDisposable
         var endDt = entry.GetEndDateTimeActual(now.Date);
         string prefix = $"{now:yyyyMMdd}_{entry.DayOfWeek}_{entry.Period}";
 
-        if (_settings.RemindClassStart)
+        if (App.Settings.RemindClassStart)
             TryFire($"{prefix}_start", now, startDt, TimeSpan.Zero,
                 ReminderType.ClassStart, "上课了", $"{entry.Subject} 开始上课");
 
-        if (_settings.RemindClassMid)
+        if (App.Settings.RemindClassMid)
             TryFire($"{prefix}_mid", now, startDt, TimeSpan.FromMinutes(20),
                 ReminderType.ClassMid, "上课提醒", $"{entry.Subject} 已上课 20 分钟");
 
-        if (_settings.RemindClassEndSoon10)
+        if (App.Settings.RemindClassEndSoon10)
         {
             TryFire($"{prefix}_endsoon10", now, endDt, TimeSpan.FromMinutes(-10),
                 ReminderType.ClassEndSoon, "即将下课", $"{entry.Subject} 还有 10 分钟下课");
         }
 
-        if (_settings.RemindClassEndSoon)
+        if (App.Settings.RemindClassEndSoon)
         {
             TryFire($"{prefix}_endsoon", now, endDt, TimeSpan.FromMinutes(-1),
                 ReminderType.ClassEndSoon, "即将下课", $"{entry.Subject} 还有 1 分钟下课");
         }
 
-        if (_settings.RemindClassEnd)
+        if (App.Settings.RemindClassEnd)
             TryFire($"{prefix}_end", now, endDt, TimeSpan.Zero,
                 ReminderType.ClassEnd, "下课", $"{entry.Subject} 下课了");
 
-        if (_settings.RemindNextClassSoon)
+        if (App.Settings.RemindNextClassSoon)
             TryFire($"{prefix}_nextclass", now, startDt, TimeSpan.FromMinutes(-5),
                 ReminderType.NextClassSoon, "快上课了", $"5 分钟后 {entry.Subject} 开始");
 
-        if (_settings.RemindDayEnd)
+        if (App.Settings.RemindDayEnd)
         {
             var lastEntry = allEntries[allEntries.Count - 1];
             if (entry == lastEntry)
@@ -146,19 +147,19 @@ public class ReminderService : IDisposable
                     ReminderType.DayEnd, "放学", "今天的课程全部结束");
         }
 
-        if (entry.Type == PeriodType.Morning && _settings.RemindSpecialPeriod)
+        if (entry.Type == PeriodType.Morning && App.Settings.RemindSpecialPeriod)
         {
             TryFire($"{prefix}_mstart", now, startDt, TimeSpan.Zero, ReminderType.MorningStart, "早自习", "早自习开始");
             TryFire($"{prefix}_mend", now, endDt, TimeSpan.Zero, ReminderType.MorningEnd, "早自习", "早自习结束");
         }
 
-        if (entry.Type == PeriodType.Evening && _settings.RemindSpecialPeriod)
+        if (entry.Type == PeriodType.Evening && App.Settings.RemindSpecialPeriod)
         {
             TryFire($"{prefix}_estart", now, startDt, TimeSpan.Zero, ReminderType.EveningStart, "晚自习", "晚自习开始");
             TryFire($"{prefix}_eend", now, endDt, TimeSpan.Zero, ReminderType.EveningEnd, "晚自习", "晚自习结束");
         }
 
-        if (entry.Type == PeriodType.Reading && _settings.RemindSpecialPeriod)
+        if (entry.Type == PeriodType.Reading && App.Settings.RemindSpecialPeriod)
         {
             TryFire($"{prefix}_rstart", now, startDt, TimeSpan.Zero, ReminderType.ReadingStart, "晚读", "晚读开始");
             TryFire($"{prefix}_rend", now, endDt, TimeSpan.Zero, ReminderType.ReadingEnd, "晚读", "晚读结束");
@@ -176,19 +177,29 @@ public class ReminderService : IDisposable
             ReminderType.ExamEndSoon, "考试提醒", $"{subject.Name} 还有 15 分钟结束，注意检查");
     }
 
+    /// <summary>
+    /// 触发窗口判断（#11 修复，剥离为可复用静态方法 —— SchedulerService/自动化任务引擎将来直接复用）。
+    /// 原 ±1.5s 窗口在 UI 卡顿/系统休眠唤醒时会错过触发点且永不补发（key 未入 _firedKeys 但时间已滑过）。
+    /// 现改为：触发前 0.5s ~ 后 90s 内且当天未触发 → 补发。软件启动/当天早已滑过的时间窗（diff 远超 90s）不会误补。
+    /// </summary>
+    internal const double TriggerCatchUpSeconds = 90;
+
+    internal static bool IsInTriggerWindow(DateTime now, DateTime trigger,
+        double catchUpSeconds = TriggerCatchUpSeconds)
+    {
+        var diff = (now - trigger).TotalSeconds;
+        return diff >= -0.5 && diff < catchUpSeconds;
+    }
+
     private bool TryFire(string key, DateTime now, DateTime baseDt, TimeSpan offset,
                           ReminderType type, string title, string message)
     {
         if (_firedKeys.Contains(key)) return false;
         var trigger = baseDt + offset;
-        var diff = (now - trigger).TotalSeconds;
-        if (diff >= -0.5 && diff < 1.0)
-        {
-            _firedKeys.Add(key);
-            FireReminder(type, title, message);
-            return true;
-        }
-        return false;
+        if (!IsInTriggerWindow(now, trigger)) return false;
+        _firedKeys.Add(key);
+        FireReminder(type, title, message);
+        return true;
     }
 
     private void FireReminder(ReminderType type, string title, string message)
@@ -211,10 +222,10 @@ public class ReminderService : IDisposable
 
     private void PlaySound()
     {
-        if (!_settings.EnableReminderSound) return;
+        if (!App.Settings.EnableReminderSound) return;
         try
         {
-            var path = _settings.ReminderSoundPath;
+            var path = App.Settings.ReminderSoundPath;
             if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
             {
                 // 自定义 wav（对齐 WPF SoundPlayer 行为）

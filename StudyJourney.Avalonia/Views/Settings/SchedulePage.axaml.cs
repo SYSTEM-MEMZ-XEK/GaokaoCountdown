@@ -32,11 +32,12 @@ public partial class SchedulePage : UserControl, ISettingsPage
             if (top == null) return;
             var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
             {
-                Title = "选择提醒音文件（wav）",
+                Title = "选择提醒音文件（仅支持 wav）",
                 AllowMultiple = false,
+                // #15 修复：PlaySoundW (winmm) 只支持 wav，mp3/wma 选了也无声 → 过滤器收窄避免误导
                 FileTypeFilter = new[]
                 {
-                    new FilePickerFileType("音频文件") { Patterns = new[] { "*.wav", "*.mp3", "*.wma" } },
+                    new FilePickerFileType("WAV 音频") { Patterns = new[] { "*.wav" } },
                     new FilePickerFileType("所有文件") { Patterns = new[] { "*.*" } }
                 }
             });

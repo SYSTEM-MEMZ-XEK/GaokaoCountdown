@@ -144,6 +144,40 @@ public static class HttpServerService
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
         "StudyJourney", "whitelist.txt");
 
+    // ── 登录限速（#4-阶段1：每 IP 连续 5 次失败锁 2 分钟，防学生暴力猜 123456）──
+    private static readonly object LoginGate = new();
+    private static readonly Dictionary<string, (int Fails, DateTime Until)> LoginFailures = new();
+    private const int LoginMaxFails = 5;
+    private static readonly TimeSpan LoginLockDuration = TimeSpan.FromMinutes(2);
+
+    private static bool IsLoginBlocked(string ip)
+    {
+        lock (LoginGate)
+        {
+            if (!LoginFailures.TryGetValue(ip, out var f)) return false;
+            if (DateTime.UtcNow < f.Until) return true;   // 锁定期内
+            LoginFailures.Remove(ip);                     // 锁定过期，重置
+            return false;
+        }
+    }
+
+    private static void RecordLoginFailure(string ip)
+    {
+        lock (LoginGate)
+        {
+            LoginFailures.TryGetValue(ip, out var f);
+            int fails = f.Fails + 1;
+            LoginFailures[ip] = fails >= LoginMaxFails
+                ? (fails, DateTime.UtcNow + LoginLockDuration)
+                : (fails, DateTime.MinValue);
+        }
+    }
+
+    private static void ClearLoginFailures(string ip)
+    {
+        lock (LoginGate) LoginFailures.Remove(ip);
+    }
+
     // ── 登录 Token（内存字典 + tokens.json 持久化）────────
     private sealed class TokenInfo
     {
@@ -158,29 +192,14 @@ public static class HttpServerService
     private static string TokensFilePath => Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tokens.json");
 
     /// <summary>
-    /// 启动服务器并同步等待就绪（最多 5 秒）。
-    /// 启动失败（端口占用等）会抛出真实异常（已解包 AggregateException）。
-    /// 已在运行则直接返回。
+    /// 启动服务器并同步等待就绪（最多 5 秒）。（#10：仅限非 UI 线程调用；UI 线程请用 <see cref="StartAsync"/>，
+    /// 避免开关服务时界面卡死最多 5 秒）
+    /// 启动失败（端口占用等）会抛出真实异常（已解包 AggregateException）。已在运行则直接返回。
     /// </summary>
     public static void Start(string url = DefaultUrl)
     {
-        TaskCompletionSource<bool> tcs;
-        lock (Gate)
-        {
-            if (_app != null) return;          // 已在运行
-            tcs = _startedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-
-        StoppedSignal.Reset();
-
-        _serverThread = new Thread(() => RunServer(url, tcs))
-        {
-            IsBackground = true,               // 进程退出时自动终止，不阻塞应用退出
-            Name = "StudyJourney.HttpServer"
-        };
-        _serverThread.Start();
-
-        // 同步等待后台线程完成启动（成功或失败），5 秒兜底防悬挂
+        var tcs = BeginStart(url);
+        if (tcs == null) return;             // 已在运行
         try
         {
             if (!tcs.Task.Wait(TimeSpan.FromSeconds(5)))
@@ -193,16 +212,54 @@ public static class HttpServerService
         }
     }
 
-    /// <summary>停止服务器（异步优雅关闭，不阻塞调用线程）</summary>
+    /// <summary>异步启动（#10 修复）：不阻塞调用线程，异常沿 await 自然抛出（供 UI/自动启动调用）</summary>
+    public static async Task StartAsync(string url = DefaultUrl)
+    {
+        var tcs = BeginStart(url);
+        if (tcs == null) return;             // 已在运行
+        await tcs.Task;
+    }
+
+    /// <summary>启动后台线程（Start / StartAsync 共用），已在运行返回 null</summary>
+    private static TaskCompletionSource<bool>? BeginStart(string url)
+    {
+        TaskCompletionSource<bool> tcs;
+        lock (Gate)
+        {
+            if (_app != null) return null;   // 已在运行
+            tcs = _startedTcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+
+        StoppedSignal.Reset();
+
+        _serverThread = new Thread(() => RunServer(url, tcs))
+        {
+            IsBackground = true,             // 进程退出时自动终止，不阻塞应用退出
+            Name = "StudyJourney.HttpServer"
+        };
+        _serverThread.Start();
+        return tcs;
+    }
+
+    /// <summary>
+    /// 停止服务器（#5 修复：等待后台线程完成 StopAsync+Dispose 后再返回，消除「Stop→立即 Start」端口竞态；
+    /// 最多等 8 秒，超时放弃并记日志，绝不无限阻塞 UI）
+    /// </summary>
     public static void Stop()
     {
+        Thread? old;
         lock (Gate)
         {
             if (_app == null) return;
             _app = null;                       // 先摘引用：IsRunning 立即变 false，并发 Start 也不会短路
             _startedTcs?.TrySetCanceled();
+            old = _serverThread;
         }
         StoppedSignal.Set();                   // 唤醒后台线程执行 StopAsync + Dispose
+        // 等后台线程真正退出（finally 里 StopAsync+DisposeAsync 最长约 3s+），超时记日志放弃
+        if (old != null && !old.Join(TimeSpan.FromSeconds(8)))
+            Helpers.AppLogger.Warn("HTTP 服务器后台线程未在 8 秒内退出，可能存在端口残留");
+        _serverThread = null;
     }
 
     /// <summary>
@@ -286,28 +343,38 @@ public static class HttpServerService
             app.MapGet("/api/health", () => Results.Json(new { status = "ok" }));
 
             // ── 老师账号列表：GET /api/teachers（公开，无需 Token，供登录页下拉选择）──
-            // 只返回用户名/显示名/科目，绝不返回密码
+            // #4-阶段1 收口：只返回 显示名/科目，不返回 username（防账号名公开枚举 + 批量爆破）
             app.MapGet("/api/teachers", () =>
             {
                 var list = (App.Settings.Teachers?.Count > 0 ? App.Settings.Teachers.AsEnumerable() : FallbackTeachers.AsEnumerable())
-                    .Select(t => new { username = t.Username, displayName = t.DisplayName, subject = t.Subject })
+                    .Select(t => new { displayName = t.DisplayName, subject = t.Subject })
                     .ToList();
                 return Results.Json(new { ok = true, count = list.Count, teachers = list });
             });
 
             // ── 登录：POST /api/login → { ok, token, displayName, ... } ──
-            //     多老师账号：校验 settings.json 的 Teachers 列表（语数英物化生 + 管理员）
+            //     多老师账号：按 用户名 或 显示名 校验（网页端下拉只显示名，不暴露登录账号）
+            //     限速：每 IP 连续失败 5 次 → 锁定 2 分钟（#4-阶段1）
             app.MapPost("/api/login", async (HttpRequest request) =>
             {
+                string remoteIp = request.HttpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                if (IsLoginBlocked(remoteIp))
+                    return Results.Json(new { ok = false, error = "too many attempts, retry later" },
+                        statusCode: StatusCodes.Status403Forbidden);
+
                 LoginRequest? req = null;
                 try { req = await request.ReadFromJsonAsync<LoginRequest>(); }
                 catch { /* 非法 JSON 走下面的空校验 */ }
 
-                var account = FindTeacher(req?.Username);
+                var account = FindTeacherForLogin(req?.Username);
                 if (account == null || req == null ||
                     !string.Equals(req.Password, account.Password, StringComparison.Ordinal))
+                {
+                    RecordLoginFailure(remoteIp);
                     return Results.Json(new { ok = false, error = "invalid credentials" },
                         statusCode: StatusCodes.Status401Unauthorized);
+                }
+                ClearLoginFailures(remoteIp);
 
                 string token = Guid.NewGuid().ToString();
                 // rememberMe=true → 1 年；false → 8 小时内存临时会话
@@ -384,7 +451,10 @@ public static class HttpServerService
                 try
                 {
                     schedule.SortEntries();
-                    schedule.Save();   // 写软件目录 schedule.json（原子性由 JsonSerializer+WriteAllText 保证）
+                    schedule.Save();   // 写软件目录 schedule.json（原子写见 Helpers/FileAtomic）
+                    // #1 修复：通知主程序从磁盘重载内存课表（Reload 触发 DataChanged →
+                    // ReminderService 缓存失效、主窗口每秒查询立即用新课表；内部自动封送 UI 线程）
+                    App.ReloadScheduleFromDisk();
                     Logger.Log($"[{GetCurrentDisplayName(request)}] 修改课表");
                     Helpers.AppLogger.Info("课表已通过远程接口更新");
                     return Results.Json(new { success = true, message = "课表更新成功" });
@@ -718,7 +788,8 @@ public static class HttpServerService
     }
 
     // ── Token 认证 ─────────────────────────────────────────
-    /// <summary>从请求提取 Token：Authorization: Bearer xxx → X-Token 头 → ?token=xxx</summary>
+    /// <summary>从请求提取 Token：Authorization: Bearer xxx → X-Token 头（#4：移除 ?token= 查询参数，
+    /// 避免 Token 进入浏览器历史/代理日志/服务端访问日志）</summary>
     private static string? ExtractToken(HttpRequest request)
     {
         var auth = request.Headers.Authorization.ToString();
@@ -729,8 +800,6 @@ public static class HttpServerService
         }
         var xt = request.Headers["X-Token"].ToString();
         if (!string.IsNullOrWhiteSpace(xt)) return xt.Trim();
-        var qt = request.Query["token"].ToString();
-        if (!string.IsNullOrWhiteSpace(qt)) return qt;
         return null;
     }
 
@@ -742,6 +811,23 @@ public static class HttpServerService
         var acc = list?.FirstOrDefault(a => string.Equals(a.Username, username, StringComparison.OrdinalIgnoreCase));
         if (acc != null) return acc;
         return FallbackTeachers.FirstOrDefault(a => string.Equals(a.Username, username, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 登录用查找：#4-阶段1 后网页端只展示显示名，故按 用户名 或 显示名 均可登录。
+    /// 显示名理论可重复 → 取第一个匹配（班级规模下无冲突；如冲突请在设置页改显示名）。
+    /// </summary>
+    private static TeacherAccount? FindTeacherForLogin(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return null;
+        var list = App.Settings.Teachers;
+        var acc = list?.FirstOrDefault(a =>
+            string.Equals(a.Username, name, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(a.DisplayName, name, StringComparison.OrdinalIgnoreCase));
+        if (acc != null) return acc;
+        return FallbackTeachers.FirstOrDefault(a =>
+            string.Equals(a.Username, name, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(a.DisplayName, name, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>内置默认老师账号（settings.json 的 Teachers 为空时兜底）：语数英物化生 + 管理员</summary>
@@ -841,7 +927,7 @@ public static class HttpServerService
         }
     }
 
-    /// <summary>把当前 Token 快照写入 软件目录\tokens.json（System.Text.Json）</summary>
+    /// <summary>把当前 Token 快照写入 软件目录\tokens.json（System.Text.Json；#6 原子写防半截）</summary>
     private static void SaveTokens()
     {
         try
@@ -849,7 +935,7 @@ public static class HttpServerService
             Dictionary<string, TokenInfo> snapshot;
             lock (TokenGate) { snapshot = new Dictionary<string, TokenInfo>(Tokens); }
             var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(TokensFilePath, json);
+            Helpers.FileAtomic.WriteAllText(TokensFilePath, json);
         }
         catch (Exception ex)
         {
@@ -999,7 +1085,7 @@ public static class HttpServerService
                   <div id="loginCard" class="glass loginbox hidden">
                     <h2>教师登录</h2>
                     <div class="hint">老师账号</div><select id="username" style="width:100%;padding:9px;background:#1a1a1a;color:var(--text);border:1px solid var(--border);font-size:14px;margin:6px 0 10px"></select>
-                    <div class="hint">密码</div><input type="password" id="password" value="Study@2026" style="margin:6px 0 10px">
+                    <div class="hint">密码</div><input type="password" id="password" placeholder="输入密码" style="margin:6px 0 10px">
                     <div class="row" style="justify-content:space-between">
                       <label class="hint" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="remember" checked> 记住我（1 年）</label>
                       <button class="btn" id="loginBtn">登 录</button>
@@ -1123,7 +1209,7 @@ public static class HttpServerService
                   return r.json();
                 }
                 function setClock(){const d=new Date();
-                  $('clock').textContent=d.toLocaleTimeString('zh-CN',{hour12:false})+' '+d.getMonth()+1+'月'+d.getDate()+'日 周'+'日一二三四五六'[d.getDay()];}
+                  $('clock').textContent=d.toLocaleTimeString('zh-CN',{hour12:false})+' '+(d.getMonth()+1)+'月'+d.getDate()+'日 周'+'日一二三四五六'[d.getDay()];}
                 setInterval(setClock,1000);setClock();
 
                 function logout(){token='';localStorage.removeItem('sj_token');stopStatusPolling();
@@ -1132,7 +1218,7 @@ public static class HttpServerService
                 function showApp(){const n=$('whoami');n.textContent='已登录';n.classList.remove('hidden');
                   $('logoutBtn').classList.remove('hidden');$('loginCard').classList.add('hidden');$('appCard').classList.remove('hidden');}
 
-                /* ── 老师账号下拉（公开接口，登录前可用）── */
+                /* ── 老师账号下拉（公开接口，登录前可用；#4：不暴露 username，按显示名登录）── */
                 async function loadTeachers(){
                   try{
                     const r=await fetch(API+'/teachers');
@@ -1141,8 +1227,8 @@ public static class HttpServerService
                     const sel=$('username');sel.innerHTML='';
                     j.teachers.forEach(t=>{
                       const o=document.createElement('option');
-                      o.value=t.username;
-                      o.textContent=t.displayName+'（'+t.subject+'）· '+t.username;
+                      o.value=t.displayName;
+                      o.textContent=t.displayName+'（'+t.subject+'）';
                       sel.appendChild(o);
                     });
                     const saved=localStorage.getItem('sj_user')||'';
@@ -1154,7 +1240,7 @@ public static class HttpServerService
                   const st=$('loginMsg');st.textContent='登录中…';
                   try{
                     const j=await api('/login',{method:'POST',json:{username:$('username').value.trim(),password:$('password').value,rememberMe:$('remember').checked}});
-                    if(j.ok){token=j.token;localStorage.setItem('sj_token',token);localStorage.setItem('sj_user',j.username||'');
+                    if(j.ok){token=j.token;localStorage.setItem('sj_token',token);localStorage.setItem('sj_user',j.displayName||j.username||'');
                       showApp();if(j.displayName)$('whoami').textContent='已登录：'+j.displayName;
                       toast('登录成功','ok');loadAll();}
                     else st.textContent='登录失败：'+(j.error||'未知错误');

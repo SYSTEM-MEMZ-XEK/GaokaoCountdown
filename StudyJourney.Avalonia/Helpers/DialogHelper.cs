@@ -3,7 +3,6 @@ using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Layout;
 using Avalonia.Media;
-
 namespace StudyJourney.Avalonia.Helpers;
 
 /// <summary>
@@ -31,18 +30,74 @@ public static class DialogHelper
         btnRow.Children.Add(okBtn);
         root.Children.Add(btnRow);
 
-        bool result = false;
-        cancelBtn.Click += (_, _) => box.Close();
-        okBtn.Click += (_, _) => { result = true; box.Close(); };
+        // 统一用 TaskCompletionSource 等待结果（#7 修复：降级非模态路径也必须等用户选择，
+        // 原实现 Show() 后立即 return false，用户还没看到弹窗就被当作「取消」）
+        var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        cancelBtn.Click += (_, _) => { tcs.TrySetResult(false); box.Close(); };
+        okBtn.Click     += (_, _) => { tcs.TrySetResult(true);  box.Close(); };
+        box.Closed      += (_, _) => tcs.TrySetResult(false);   // 标题栏 X / Alt+F4 = 取消
 
         if (owner != null && owner.IsVisible)
         {
             owner.Activate();              // 确保 owner 在前台，弹窗才不会被盖住
             await box.ShowDialog(owner);
-            return result;
         }
-        box.Show();
-        return false;
+        else
+        {
+            box.Show();                    // 降级：非模态显示，但仍等待用户点按钮/关窗（TrySetResult 幂等，双路径无冲突）
+        }
+        return await tcs.Task;
+    }
+
+    /// <summary>
+    /// 三选一对话框（#8 修复：设置页切页/关窗前处理未保存修改）。
+    /// 返回 1=primary / 2=secondary / 0=取消（关闭窗口也算取消）。
+    /// </summary>
+    public static async Task<int> ShowChoiceAsync(Window? owner, string title, string message,
+        string primaryText, string secondaryText, string cancelText = "取消")
+    {
+        var panel = new StackPanel { Margin = new Thickness(24), Spacing = 16 };
+        panel.Children.Add(new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap });
+
+        var btnRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Spacing = 8
+        };
+        var cancelBtn = new Button { Content = cancelText, MinWidth = 84 };
+        var secondaryBtn = new Button { Content = secondaryText, MinWidth = 84 };
+        var primaryBtn = new Button { Content = primaryText, Classes = { "accent" }, MinWidth = 84 };
+        btnRow.Children.Add(cancelBtn);
+        btnRow.Children.Add(secondaryBtn);
+        btnRow.Children.Add(primaryBtn);
+        panel.Children.Add(btnRow);
+
+        var box = new Window
+        {
+            Title = title,
+            Icon = StudyJourney.Avalonia.App.AppIcon,
+            Width = 460,
+            Height = 210,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            CanResize = false,
+            Topmost = true,
+            Content = panel
+        };
+
+        var tcs = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        cancelBtn.Click    += (_, _) => { tcs.TrySetResult(0); box.Close(); };
+        secondaryBtn.Click += (_, _) => { tcs.TrySetResult(2); box.Close(); };
+        primaryBtn.Click   += (_, _) => { tcs.TrySetResult(1); box.Close(); };
+        box.Closed         += (_, _) => tcs.TrySetResult(0);
+
+        if (owner != null && owner.IsVisible)
+        {
+            owner.Activate();
+            await box.ShowDialog(owner);
+        }
+        else box.Show();
+        return await tcs.Task;
     }
 
     public static async Task ShowMessageAsync(Window? owner, string title, string message)
