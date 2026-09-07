@@ -41,6 +41,12 @@ public partial class ScheduleEditorWindow : Window
         }
         AdjustFromDayCb.SelectedIndex = 0;
         AdjustToDayCb.SelectedIndex = 1;
+        // 时段模板：默认编辑全周通用模板；可切换到某天单独定制（如周六特殊作息）
+        TplDayCombo.ItemsSource = new[]
+        {
+            "默认（周一~周日通用）", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"
+        };
+        TplDayCombo.SelectedIndex = 0;
         BuildTemplateList();
         RebuildTimetable();
     }
@@ -49,6 +55,27 @@ public partial class ScheduleEditorWindow : Window
     private string _baselineJson = "";
     private bool _closeConfirmed;
     private List<(int Period, string Start, string End, PeriodType Type)> _rowSlots = new();
+
+    // ── 按天独立作息：模板编辑对象（0=默认全周，1..7=该天独立定制）──
+    private int _tplDay;
+
+    private static List<TimeTemplate> CloneTemplates(List<TimeTemplate> src)
+        => src.Select(t => new TimeTemplate
+        { Period = t.Period, StartTime = t.StartTime, EndTime = t.EndTime, Type = t.Type }).ToList();
+
+    /// <summary>当前模板对象（默认 or 某独立天）。切换独立天且未建过时自动从默认复制一份（深拷贝，互不影响）</summary>
+    private List<TimeTemplate> CurrentTemplates()
+    {
+        var data = App.Schedule.Data;
+        if (_tplDay == 0) return data.TimeTemplates;
+        data.DayTimeTemplates ??= new Dictionary<int, List<TimeTemplate>>();
+        if (!data.DayTimeTemplates.TryGetValue(_tplDay, out var list))
+        {
+            list = CloneTemplates(data.TimeTemplates);
+            data.DayTimeTemplates[_tplDay] = list;
+        }
+        return list;
+    }
 
     private static string SerializeData()
         => JsonSerializer.Serialize(App.Schedule.Data, new JsonSerializerOptions { WriteIndented = true });
@@ -411,41 +438,78 @@ public partial class ScheduleEditorWindow : Window
     private CourseSlot? _swapTarget;
     private readonly Dictionary<CourseSlot, Border> _slotBorders = new();
 
-    // ── 网格构建 ─────────────────────────────────────────────
+    // ── 网格构建（#按天作息：行 = 默认 ∪ 独立天模板节次并集；每格时间按当天模板取）──
     private List<TimetableRow> BuildTimetableRows()
     {
         var data = App.Schedule.Data;
         var entries = data.Entries;
-        var temps = data.TimeTemplates;
+        var defaultTpl = data.TimeTemplates;
+        var dayTpls = data.DayTimeTemplates ?? new Dictionary<int, List<TimeTemplate>>();
 
-        var slots = temps.Count > 0
-            ? temps.Select(t => (Period: t.Period, Start: t.StartTime, End: t.EndTime, Type: t.Type)).ToList()
-            : entries.GroupBy(e => (e.Period, e.StartTimeStr, e.EndTimeStr, e.Type))
-                     .Select(g => (Period: g.Key.Period, Start: g.Key.StartTimeStr, End: g.Key.EndTimeStr, Type: g.Key.Type))
-                     .OrderBy(x => x.Period).ToList();
+        var allTpl = defaultTpl.Concat(dayTpls.Values.SelectMany(v => v)).ToList();
+        var periods = new SortedSet<int>(allTpl.Select(t => t.Period));
 
-        // #9：记录每行的时段元数据（周视图单元格写 Entries 需要 Period/时间/类型）
+        List<(int Period, string Start, string End, PeriodType Type)> slots;
+        if (periods.Count > 0)
+        {
+            slots = periods.Select(p =>
+            {
+                var t = defaultTpl.FirstOrDefault(x => x.Period == p)
+                        ?? allTpl.FirstOrDefault(x => x.Period == p);
+                return t != null ? (p, t.StartTime, t.EndTime, t.Type)
+                                 : (p, "08:00", "08:45", PeriodType.Normal);
+            }).ToList();
+        }
+        else
+        {
+            // 无任何模板：从 Entries 实际作息推断（旧行为）
+            slots = entries.GroupBy(e => (e.Period, e.StartTimeStr, e.EndTimeStr, e.Type))
+                .Select(g => (Period: g.Key.Period, Start: g.Key.StartTimeStr, End: g.Key.EndTimeStr, Type: g.Key.Type))
+                .OrderBy(x => x.Period).ToList();
+        }
+
+        // 行级默认时段（默认模板优先；仅独立天独有的节次取第一条），兼容旧调用点回退
         _rowSlots = slots.Select(s => (s.Period, s.Start, s.End, s.Type)).ToList();
+
+        // 按天科目填充
+        var subjectByDayPeriod = entries
+            .GroupBy(e => e.DayOfWeek)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(e => e.Period, e => e.Subject));
 
         var rows = new List<TimetableRow>();
         foreach (var (period, start, end, type) in slots)
         {
-            var row = new TimetableRow
-            {
-                TimeLabel = type switch
-                {
-                    PeriodType.Morning => $"早 {start}-{end}",
-                    PeriodType.Evening => $"晚 {start}-{end}",
-                    PeriodType.Reading => $"读 {start}-{end}",
-                    PeriodType.Noon => $"午 {start}-{end}",
-                    _ => $"第{period}节 {start}-{end}"
-                }
-            };
+            rows.Add(new TimetableRow { TimeLabel = FormatRowLabel(period, start, end, type) });
+            var row = rows[^1];
             for (int d = 0; d < 7; d++)
-                row[d] = entries.FirstOrDefault(e => e.DayOfWeek == d + 1 && e.Period == period)?.Subject ?? "";
-            rows.Add(row);
+            {
+                if (subjectByDayPeriod.TryGetValue(d + 1, out var map) &&
+                    map.TryGetValue(period, out var subj))
+                    row[d] = subj;
+            }
         }
         return rows;
+    }
+
+    /// <summary>行首标签：某节仅独立天（如周六）存在而默认模板没有时，用该天时间提示</summary>
+    private static string FormatRowLabel(int period, string start, string end, PeriodType type)
+    {
+        string label = type switch
+        {
+            PeriodType.Morning => $"早 {start}-{end}",
+            PeriodType.Evening => $"晚 {start}-{end}",
+            PeriodType.Reading => $"读 {start}-{end}",
+            PeriodType.Noon => $"午 {start}-{end}",
+            _ => $"第{period}节 {start}-{end}"
+        };
+        return label;
+    }
+
+    /// <summary>某天某节的模板时间（day=1..7）：独立天模板 → 默认模板 → null（表示该节当天没有时段）</summary>
+    private static (string start, string end, PeriodType type)? GetTplCell(int day, int period)
+    {
+        var m = App.Schedule.Data.GetTemplatesFor(day).FirstOrDefault(t => t.Period == period);
+        return m != null ? (m.StartTime, m.EndTime, m.Type) : null;
     }
 
     /// <summary>
@@ -461,18 +525,20 @@ public partial class ScheduleEditorWindow : Window
 
         for (int i = 0; i < rows.Count; i++)
         {
-            var slot = i < _rowSlots.Count
+            var rowSlot = i < _rowSlots.Count
                 ? _rowSlots[i]
                 : (Period: i + 1, Start: "08:00", End: "08:45", Type: PeriodType.Normal);
             for (int d = 0; d < 7; d++)
             {
+                // 新增条目时的时间源：#按天作息 该天模板 → 行级默认（不再统一用默认模板时间）
+                var ct = GetTplCell(d + 1, rowSlot.Period);
                 var cell = new CourseSlot
                 {
                     DayIndex = d,
-                    Period = slot.Period,
-                    StartTimeStr = slot.Start,
-                    EndTimeStr = slot.End,
-                    Type = slot.Type,
+                    Period = rowSlot.Period,
+                    StartTimeStr = ct?.start ?? rowSlot.Start,
+                    EndTimeStr = ct?.end ?? rowSlot.End,
+                    Type = ct?.type ?? rowSlot.Type,
                 };
                 WriteEntryFromCell(cell, rows[i][d]);
             }
@@ -531,6 +597,9 @@ public partial class ScheduleEditorWindow : Window
             AddHeaderCell(grid, 0, d + 1, DayNames[d]);
 
         // 数据行
+        var entriesMap = App.Schedule.Data.Entries
+            .GroupBy(e => e.DayOfWeek)
+            .ToDictionary(g => g.Key, g => g.ToDictionary(e => e.Period));
         for (int i = 0; i < _rows.Count; i++)
         {
             var row = _rows[i];
@@ -538,6 +607,18 @@ public partial class ScheduleEditorWindow : Window
 
             for (int d = 0; d < 7; d++)
             {
+                int dayNo = d + 1;
+                int period = _rowSlots.Count > i ? _rowSlots[i].Period : i + 1;
+                // 该格时间优先级：#按天作息 独立天模板 → 默认模板 → 条目现有时间
+                var tpl = GetTplCell(dayNo, period);
+                entriesMap.TryGetValue(dayNo, out var dayMap);
+                ScheduleEntry? entry = null;
+                dayMap?.TryGetValue(period, out entry);
+                bool hasTime = tpl != null || entry != null;
+                string s = tpl?.start ?? entry?.StartTimeStr ?? "08:00";
+                string e2 = tpl?.end ?? entry?.EndTimeStr ?? "08:45";
+                var type = tpl?.type ?? entry?.Type ?? PeriodType.Normal;
+
                 var slot = new CourseSlot
                 {
                     RowIndex = i,
@@ -545,11 +626,10 @@ public partial class ScheduleEditorWindow : Window
                     Subject = row[d],
                     TimeLabel = row.TimeLabel,
                     DayName = DayNames[d],
-                    // #9：携带时段元数据，单元格编辑可直接 upsert Entries
-                    Period = _rowSlots.Count > i ? _rowSlots[i].Period : i + 1,
-                    StartTimeStr = _rowSlots.Count > i ? _rowSlots[i].Start : "08:00",
-                    EndTimeStr = _rowSlots.Count > i ? _rowSlots[i].End : "08:45",
-                    Type = _rowSlots.Count > i ? _rowSlots[i].Type : PeriodType.Normal,
+                    Period = period,
+                    StartTimeStr = s,
+                    EndTimeStr = e2,
+                    Type = type,
                 };
 
                 var border = new Border
@@ -558,25 +638,43 @@ public partial class ScheduleEditorWindow : Window
                     BorderThickness = new Thickness(0.5),
                     CornerRadius = new CornerRadius(4),
                     Margin = new Thickness(1),
-                    Tag = slot
+                    Tag = slot,
+                    Opacity = hasTime ? 1.0 : 0.35
                 };
                 var tb = new TextBox
                 {
-                    Text = row[d],
+                    Text = hasTime ? row[d] : "—",
                     BorderThickness = new Thickness(0),
                     Background = Brushes.Transparent,
-                    Padding = new Thickness(6, 2, 6, 2),
+                    Padding = new Thickness(6, 2, 6, 12),   // 底部留白给时间角标
                     VerticalContentAlignment = VerticalAlignment.Center,
+                    HorizontalContentAlignment = HorizontalAlignment.Center,
                     FontSize = 13,
+                    IsEnabled = hasTime,                    // 无模板也无课（如周六无第10+节）→ 灰格禁填
                     Tag = slot
                 };
+                // 右下角小字显示该天该节实际时间（作息不同一目了然）
+                var timeTb = new TextBlock
+                {
+                    Text = hasTime ? $"{s}-{e2}" : "无此节",
+                    FontSize = 9,
+                    Foreground = new SolidColorBrush(Color.FromArgb(0x9A, 0xFF, 0xFF, 0xFF)),
+                    HorizontalAlignment = HorizontalAlignment.Right,
+                    VerticalAlignment = VerticalAlignment.Bottom,
+                    Margin = new Thickness(0, 0, 3, 1),
+                    IsHitTestVisible = false
+                };
+                var cellHost = new Grid();
+                cellHost.Children.Add(tb);
+                cellHost.Children.Add(timeTb);
+
                 tb.TextChanged += (_, _) =>
                 {
                     // #9 修复：周视图编辑直写 Entries（原只写 _rows 快照，周视图保存时 Clear 重建会覆盖 DataGrid 的修改）
-                    if (tb.Tag is CourseSlot s && _rows != null && s.RowIndex < _rows.Count)
+                    if (tb.Tag is CourseSlot s2 && _rows != null && s2.RowIndex < _rows.Count)
                     {
-                        _rows[s.RowIndex][s.DayIndex] = tb.Text ?? "";
-                        WriteEntryFromCell(s, tb.Text ?? "");
+                        _rows[s2.RowIndex][s2.DayIndex] = tb.Text ?? "";
+                        WriteEntryFromCell(s2, tb.Text ?? "");
                     }
                 };
                 tb.PointerPressed += (_, e) =>
@@ -584,7 +682,7 @@ public partial class ScheduleEditorWindow : Window
                     if (e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
                         SelectSlot(slot, border);
                 };
-                border.Child = tb;
+                border.Child = cellHost;
                 _slotBorders[slot] = border;
                 Grid.SetColumn(border, d + 1);
                 Grid.SetRow(border, i + 1);
@@ -753,12 +851,55 @@ public partial class ScheduleEditorWindow : Window
     private void ClearSwapSelBtn_Click(object? sender, RoutedEventArgs e) => ClearSwapSelection();
 
     // ── 时段模板（代码构建行列表，避免 Avalonia DataGrid 无 ComboBox 列的坑）──
+    /// <summary>切换"适用天"：独立天首次进入自动复制默认时刻并落盘（当作该天定制作起点）；默认天显示通用模板</summary>
+    private void TplDayCombo_SelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (TplDayCombo.SelectedIndex < 0) return;
+        _tplDay = TplDayCombo.SelectedIndex;
+
+        var data = App.Schedule.Data;
+        bool created = false;
+        if (_tplDay != 0)
+        {
+            data.DayTimeTemplates ??= new Dictionary<int, List<TimeTemplate>>();
+            if (!data.DayTimeTemplates.ContainsKey(_tplDay))
+            {
+                data.DayTimeTemplates[_tplDay] = CloneTemplates(data.TimeTemplates);
+                created = true;
+            }
+        }
+
+        TplResetBtn.IsVisible = _tplDay != 0;
+        TplDayNote.Text = _tplDay switch
+        {
+            0 => "编辑全周通用时刻：未单独定制的星期几都跟随它；「应用」把默认模板时刻写入周一~周日未定制的天。",
+            6 => "星期六已独立：删掉没有的大课间 / 眼保健操时段、改各节起止，点「应用」写入星期六课表。",
+            _ => $"星期{_tplDay}已独立：改完点「应用」写入该天课表；「恢复默认」可取消定制、重新跟随默认模板。"
+        };
+
+        if (created) { App.Schedule.Save(); MarkClean(); }   // 深拷贝落盘 = 该天定制的起点（避免误把默认当该天改）
+        BuildTemplateList();
+        RebuildTimetable();
+    }
+
+    /// <summary>取消某天的独立定制，恢复跟随默认模板</summary>
+    private void TplResetBtn_Click(object? sender, RoutedEventArgs e)
+    {
+        var data = App.Schedule.Data;
+        if (_tplDay != 0) data.ResetDayTemplates(_tplDay);
+        _tplDay = 0;
+        App.Schedule.Save();
+        MarkClean();
+        TplDayCombo.SelectedIndex = 0;   // 触发 handler：刷新 note/按钮/列表/网格
+    }
+
     private void BuildTemplateList()
     {
         TemplateHost.Content = null;
         var panel = new StackPanel { Spacing = 6 };
+        var list = CurrentTemplates();
 
-        foreach (var t in App.Schedule.Data.TimeTemplates)
+        foreach (var t in list)
         {
             // 列：节次 / 开始 / 结束 / 类型(占剩余) / 删除
             var row = new Grid { ColumnDefinitions = new ColumnDefinitions("44,54,54,*,28") };
@@ -780,7 +921,7 @@ public partial class ScheduleEditorWindow : Window
             var delBtn = new Button { Content = "✕", Padding = new Thickness(4, 0), FontSize = 11, MinHeight = 34 };
             delBtn.Click += (_, _) =>
             {
-                App.Schedule.Data.TimeTemplates.Remove(t);
+                list.Remove(t);
                 App.Schedule.Save();
                 MarkClean();
                 BuildTemplateList();
@@ -800,28 +941,37 @@ public partial class ScheduleEditorWindow : Window
     private void AddTimeSlotBtn_Click(object? sender, RoutedEventArgs e)
     {
         var data = App.Schedule.Data;
-        int nextP = data.TimeTemplates.Count > 0 ? data.TimeTemplates[^1].Period + 1 : 1;
+        var list = CurrentTemplates();
+        int nextP = list.Count > 0 ? list[^1].Period + 1 : 1;
         string start = "08:00", end = "08:45";
-        if (data.TimeTemplates.Count > 0 &&
-            TimeSpan.TryParse(data.TimeTemplates[^1].EndTime, out var lastEnd))
+        if (list.Count > 0 && TimeSpan.TryParse(list[^1].EndTime, out var lastEnd))
         {
             var ns = lastEnd.Add(TimeSpan.FromMinutes(5));
             start = $"{ns.Hours:D2}:{ns.Minutes:D2}";
             end = $"{ns.Add(TimeSpan.FromMinutes(40)).Hours:D2}:{ns.Add(TimeSpan.FromMinutes(40)).Minutes:D2}";
         }
-        data.TimeTemplates.Add(new TimeTemplate { Period = nextP, StartTime = start, EndTime = end });
+        list.Add(new TimeTemplate { Period = nextP, StartTime = start, EndTime = end });
         App.Schedule.Save();
         MarkClean();
         BuildTemplateList();
         RebuildTimetable();
     }
 
+    /// <summary>应用模板：把默认 + 各独立天的模板时刻同步进课表（SyncEntryTimesFromTemplates）。
+    /// 原实现只 Save+Rebuild（模板时间不落 Entries，提醒/自动化读不到新时刻）→ 本次修复并支持按天。</summary>
     private void ApplyTemplateBtn_Click(object? sender, RoutedEventArgs e)
     {
-        if (App.Schedule.Data.TimeTemplates.Count == 0) return;
+        var data = App.Schedule.Data;
+        bool any = data.TimeTemplates.Count > 0 ||
+                   (data.DayTimeTemplates != null && data.DayTimeTemplates.Values.Any(v => v.Count > 0));
+        if (!any) return;
+        data.SyncEntryTimesFromTemplates();
+        data.SortEntries();
         App.Schedule.Save();
         MarkClean();
         RebuildTimetable();
+        _ = App.ShowMessageAsync("时段模板",
+            "模板时刻已按天应用到课表。\n上课提醒、上课前自动开课件、放学判断都会按新时间生效。");
     }
 
     // ── 调休顺延 ─────────────────────────────────────────────

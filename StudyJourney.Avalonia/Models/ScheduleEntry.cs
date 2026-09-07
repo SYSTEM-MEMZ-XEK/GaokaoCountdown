@@ -183,8 +183,47 @@ namespace StudyJourney.Avalonia.Models
             public List<ScheduleEntry> Entries { get; set; } = new();
             /// <summary>考试集合（ObservableCollection 使 DataGrid 增删自动刷新）</summary>
             public System.Collections.ObjectModel.ObservableCollection<ExamEntry> Exams { get; set; } = new();
-            /// <summary>时段模板（课程表网格的行定义），若为空则自动从 Entries 推算</summary>
+            /// <summary>时段模板（课程表网格的行定义），若为空则自动从 Entries 推算。
+            /// 语义：全周通用默认模板（未单独定制的星期几都按它）。</summary>
             public List<TimeTemplate> TimeTemplates { get; set; } = new();
+            /// <summary>按星期几独立定制的时段模板：key = 1(周一)..7(周日)，只存"与默认不同"的天；
+            /// 缺省的星期几用 <see cref="TimeTemplates"/>。周六上午无大课间/下午无眼保健操等差异化作息在此表达。</summary>
+            public Dictionary<int, List<TimeTemplate>> DayTimeTemplates { get; set; } = new();
+
+            /// <summary>取某星期几应使用的时段模板（1=周一..7=周日；独立定制优先，缺省回退全周默认）</summary>
+            public List<TimeTemplate> GetTemplatesFor(int day)
+            {
+                if (DayTimeTemplates != null && DayTimeTemplates.TryGetValue(day, out var t) && t != null)
+                    return t;
+                return TimeTemplates;
+            }
+
+            /// <summary>把某天恢复为跟随全周默认模板（删除独立定制）</summary>
+            public void ResetDayTemplates(int day)
+            {
+                DayTimeTemplates?.Remove(day);
+            }
+
+            /// <summary>
+            /// 把"各天模板时间"同步进 Entries（模板里有该 天+节次 才更新起止/类型；模板没有的节次保留原样）。
+            /// 供课表编辑器「应用模板」调用 —— 老师改完某天作息点应用，课表时间立即按天刷新，
+            /// 提醒 / 上课前自动开课件 / 放学关机等自动化读到的就是新时间。
+            /// </summary>
+            public void SyncEntryTimesFromTemplates()
+            {
+                var byDay = Enumerable.Range(1, 7)
+                    .ToDictionary(d => d, d => GetTemplatesFor(d).ToDictionary(t => t.Period));
+                foreach (var e in Entries)
+                {
+                    if (byDay.TryGetValue(e.DayOfWeek, out var dayTpl) &&
+                        dayTpl.TryGetValue(e.Period, out var tpl))
+                    {
+                        e.StartTimeStr = tpl.StartTime;
+                        e.EndTimeStr = tpl.EndTime;
+                        e.Type = tpl.Type;
+                    }
+                }
+            }
 
             /// <summary>课表文件完整路径（软件目录 schedule.json，随软件文件夹分发；HTTP 远程管理共用）</summary>
             public static string ScheduleFilePath => _schedulePath;

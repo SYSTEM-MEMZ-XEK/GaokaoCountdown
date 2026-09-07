@@ -122,12 +122,23 @@
                         <Border CornerRadius="8" Background="#14FFFFFF" BorderBrush="#1FFFFFFF" BorderThickness="1" Padding="18,16">
                             <StackPanel Spacing="8">
                                 <TextBlock Text="时段模板" FontSize="15" FontWeight="SemiBold"/>
-                                <TextBlock Text="定义每个时段的起止时间与类型，决定网格行" FontSize="11"
-                                           Foreground="{DynamicResource TextFillColorTertiaryBrush}" TextWrapping="Wrap"/>
+                                <TextBlock Text="作息不同的日子（如周六）可单独一套时间：先选下面的星期几，会自动复制默认时刻，再改即可。"
+                                           FontSize="11" Foreground="{DynamicResource TextFillColorTertiaryBrush}" TextWrapping="Wrap"/>
+                                <Grid ColumnDefinitions="Auto,*,Auto">
+                                    <TextBlock Text="适用" FontSize="12" VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="TplDayCombo" Grid.Column="1" Margin="8,0,8,0"
+                                              SelectionChanged="TplDayCombo_SelectionChanged"/>
+                                    <Button Grid.Column="2" x:Name="TplResetBtn" Content="恢复默认" FontSize="11"
+                                            Padding="10,5" Click="TplResetBtn_Click" IsVisible="False"
+                                            ToolTip.Tip="该星期几不再单独定制，跟随默认模板"/>
+                                </Grid>
+                                <TextBlock x:Name="TplDayNote" Text="" FontSize="11"
+                                           Foreground="#FFCCAA44" TextWrapping="Wrap"/>
                                 <ScrollViewer x:Name="TemplateHost" MaxHeight="200" VerticalScrollBarVisibility="Auto"/>
                                 <StackPanel Orientation="Horizontal" Spacing="8">
                                     <Button Content="＋ 时段" Click="AddTimeSlotBtn_Click" Padding="12,6"/>
-                                    <Button Content="应用" Click="ApplyTemplateBtn_Click" Padding="12,6" ToolTip.Tip="用模板重建网格行"/>
+                                    <Button Content="应用" Click="ApplyTemplateBtn_Click" Padding="12,6"
+                                            ToolTip.Tip="把当前模板（含按天定制）的时刻应用到课表：提醒/自动化/放学判断随之生效"/>
                                 </StackPanel>
                             </StackPanel>
                         </Border>
